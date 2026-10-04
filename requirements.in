@@ -1,0 +1,2 @@
+# Direct protocol binding; installation is explicit, never performed at runtime.
+neonize==0.5.2

@@ -1,189 +1,183 @@
 # whatsapp-cli-python
 
-A small Python CLI for **bounded local WhatsApp history reads** and **guarded
-text sends**, with a familiar interface inspired by
+A small Python CLI for private account linking, bounded local history, and guarded
+WhatsApp text sends. Inspired by
 [messages-cli-python](https://github.com/maralski/messages-cli-python).
-Python 3.9+ and the standard library only; macOS and Linux.
-Copy the single `whatsapp_cli.py` file to use it elsewhere.
 
-History reads an explicitly selected [wacli](https://github.com/openclaw/wacli)
-message index. Sending requires a separately installed, trusted **wacli 0.20.0**
-executable and an already linked account. This wrapper does not install wacli,
-pair devices, launch WhatsApp Desktop, run a server, or change OS permissions.
+**Version 0.2.0 has no wacli dependency.** It connects directly through
+[Neonize 0.5.2](https://github.com/krypton-byte/neonize/releases/tag/0.5.2), a Python
+binding to the native Whatsmeow protocol library. It works in the background;
+WhatsApp Desktop and browser automation are unnecessary. Python **3.10+**, macOS
+or Linux, arm64 or x86_64 are supported. This is Python code with a native Go
+library dependency, rather than a pure Python implementation of the protocol.
 
-**This uses an unofficial WhatsApp Web client, not Meta's supported Business
-API.** Protocol changes, account restrictions, and session expiry are possible.
-Review [WhatsApp's terms](https://www.whatsapp.com/legal/terms-of-service) and
-[wacli's documentation](https://github.com/openclaw/wacli/tree/v0.20.0/docs).
-Use only accounts, conversations, and recipients you are authorized to access.
+**This is an unofficial personal-account client, not Meta's supported Business
+API.** Review [WhatsApp's terms](https://www.whatsapp.com/legal/terms-of-service).
+Protocol changes, restrictions, and session expiry remain possible. Use only
+accounts and conversations you are authorized to access.
 
-## Run
+## Install
 
-```sh
-python3 whatsapp_cli.py --version
-python3 whatsapp_cli.py --help
-python3 -m unittest -v
-```
-
-Both commands default to **dry-run**. Add `--execute` only for an intentional
-read or send. A dry-run validates arguments and, for sends, reads bounded stdin;
-it does not inspect any account files or binaries, open a database, or launch
-a subprocess. Its JSON output omits recipients, paths, and text.
-
-Tests use synthetic SQLite fixtures, a fake backend, and local Python subprocesses.
-They do not open real WhatsApp data, pair accounts, or send messages.
-
-## Read one chat
-
-Supply the absolute path to your already synced `wacli.db` and a known exact
-international phone number or phone JID. This CLI does not enumerate chats or
-resolve names. The example number below is fictional.
+Keep both runtime files, `whatsapp_cli.py` and `whatsapp_backend.py`, together.
+Install reviewed dependencies explicitly in a dedicated environment:
 
 ```sh
-# Preview only. Replace the example path and scope when you intend to read.
-python3 whatsapp_cli.py history \
-  --db /absolute/path/to/private-store/wacli.db \
-  --chat '+12025550123' \
-  --since 2026-01-01T00:00:00Z --until 2026-01-02T00:00:00Z --limit 20
+python3 -m venv .venv
+.venv/bin/python -m pip install --require-hashes --only-binary=:all: -r requirements.lock
+.venv/bin/python whatsapp_cli.py --version
+.venv/bin/python -W error::ResourceWarning -m unittest -v
+.venv/bin/python -I -B verify_protocol.py
 ```
 
-Add `--execute` to read. Dates require an explicit timezone and must be from
-1970 onward. Start is inclusive; end is exclusive. Windows are limited to
-**31 days**, results to **200 rows**, and each text to **10,000 characters**.
-Output is JSON Lines, newest first, with message ID, UTC timestamp, direction,
-text, and availability/truncation flags. Unicode and terminal controls are
-escaped in JSON; normal JSON parsers restore them.
+The lock pins all Python dependencies and permitted distribution hashes. The
+worker verifies every installed version and the platform-specific native library
+against official 0.5.2 release digests before loading it. Missing or mismatched
+libraries fail closed. Neonize's runtime downloader is replaced **before** its
+eager import; this CLI never downloads or repairs dependencies at runtime.
+`libmagic` and FFmpeg are unnecessary for this text-only interface: media access
+is deliberately disabled. The offline smoke check loads the library and parses
+synthetic events; it does not instantiate or connect an account client.
 
-The query uses SQLite `mode=ro`, `query_only`, bound parameters, a restricted
-authorizer, and a progress budget/deadline. Only the `messages` table's selected
-fields are read; views, virtual tables, and generated required columns are rejected.
-Revoked, locally deleted, and purged rows are excluded according to the index's
-current flags. Null text remains null. Media, rich messages, and captions stored
-outside the `text` column are not decoded. No contacts, media keys, filenames,
-or session credentials are returned.
+## Account lifecycle
 
-This is **cached history**, potentially incomplete or stale. Reading does not
-connect to WhatsApp, sync, fetch older messages, or mark anything read. Modern
-wacli 0.20.0 schema is required; incompatible data fails with a redacted error.
-Queries have a three-second progress deadline, an instruction budget, and a
-one-second lock wait. These cannot bound a stalled filesystem or OS. On Python
-3.11+, SQLite's per-value length limit is also reduced to 1 MiB; oversized
-records may fail instead of truncating. Keep your OS/Python SQLite up to date.
+Commands default to **dry-run**, including init, status, and pairing. Execution
+requires `--execute`. Dry-run validates input without inspecting account files,
+opening databases, importing Neonize, or starting a child process. Output omits
+paths, phone numbers, QR data, and bodies.
 
-The index contents are never written. SQLite may use or create WAL coordination
-sidecars (`-shm`) when reading a live WAL database; this is not a guarantee of
-zero filesystem writes. Existing sidecars are checked for unsafe paths first.
-
-## Send one text
-
-The body comes from UTF-8 stdin: **1–10,000 characters**, at most **40,000
-bytes**, nonblank and without NUL. It is passed unchanged as one backend argument,
-never through a shell or as executable code. Newlines and Unicode are preserved.
+Choose a direct absolute path under a trusted existing parent directory:
 
 ```sh
-# Preview only. The number and paths are examples.
-printf '%s' 'Example message' | python3 whatsapp_cli.py send \
-  --to '+12025550123' --store /absolute/path/to/private-store
+# Create a NEW private account store; existing paths are never overwritten.
+.venv/bin/python whatsapp_cli.py init --store /absolute/path/to/cli-store --execute
+
+# Run this YOURSELF in an interactive terminal, then scan the displayed QR
+# from WhatsApp on your phone: Settings > Linked devices > Link a device.
+.venv/bin/python whatsapp_cli.py pair --store /absolute/path/to/cli-store --execute
+
+# Local session status only; this does not connect or prove online health.
+.venv/bin/python whatsapp_cli.py status --store /absolute/path/to/cli-store --execute
 ```
 
-For execution, additionally supply:
+Pairing is explicit and requires a controlling terminal. QR credentials are
+written only to `/dev/tty`, never stdout/stderr/result logs. Ordinary commands
+require one existing session, select that exact device, and refuse unexpected QR
+or account changes. Pairing an additional account into an already linked store
+is forbidden. Revoke an unwanted device through WhatsApp's Linked devices UI.
 
-- `--wacli /absolute/direct/path/to/wacli`
-- `--wacli-sha256 TRUSTED_EXECUTABLE_SHA256`
-- `--execute`
+**Upgrade from 0.1.x:** existing account stores are not imported or altered.
+Create and explicitly link a separate store, validate it, then switch your caller.
+A new linked device is persistent account access and needs an intentional user
+scan. Avoid replacing a working booking sender until that step is complete.
+There is no automatic fallback to the earlier transport.
 
-Obtain wacli from its [official release](https://github.com/openclaw/wacli/releases/tag/v0.20.0),
-verify the archive against the trusted published checksum and applicable signing
-information, then pin the extracted executable's SHA-256. The archive checksum
-and executable checksum are different. Hashing an untrusted binary does not
-establish trust; no checksum is fetched or automatically accepted by this CLI.
-After a deliberate trusted upgrade, review compatibility and update the pin yourself.
+Stores are created as `0700`; account marker, session database, index, lock, and
+sidecars must be owned by the current user and private (`0600`). Unsafe symlinks,
+hard links, special files, writable ancestors, and URI query/fragment characters
+in store paths are rejected. Permissions are never silently repaired. On macOS,
+`/tmp` and `/var` are symlinks: choose their direct paths when appropriate.
 
-An integration can call the script without a shell:
+## Send text
+
+The body comes from UTF-8 stdin: nonblank, without NUL, at most **10,000
+characters / 40,000 bytes**. The example number is fictional.
+
+```sh
+# Preview only; add --execute for an intentional send.
+printf '%s' 'Example message' | .venv/bin/python whatsapp_cli.py send \
+  --store /absolute/path/to/cli-store --to '+12025550123'
+```
+
+Both the parent and worker validate exact international phone numbers or phone
+JIDs. Names, groups, LIDs, broadcasts, attachments, replies, and batches are not
+supported. Self-sends require explicit `--allow-self`; booking callers should
+never add it. Text is sent as a literal conversation protobuf: no automatic
+mentions or URL previews. The message and recipient travel to the worker over
+stdin, **never through process arguments**, shell code, or an intermediate file.
+Avoid putting real bodies in interactive shell history; use a trusted caller.
 
 ```python
 import subprocess
 
 result = subprocess.run(
-    ["python3", "whatsapp_cli.py", "send",
-     "--to", "+12025550123",
-     "--store", "/absolute/path/to/private-store",
-     "--wacli", "/absolute/direct/path/to/wacli",
-     "--wacli-sha256", trusted_executable_sha256,
-     "--execute"],
+    ["/absolute/path/to/.venv/bin/python", "/absolute/path/to/whatsapp_cli.py",
+     "send", "--store", "/absolute/path/to/cli-store",
+     "--to", "+12025550123", "--execute"],
     input=notice_text.encode("utf-8"), capture_output=True, timeout=65,
 )
 ```
 
-Replace all examples before any intentional execution. Avoid putting real
-message text in interactive shell history; use a trusted input tool or caller.
+Success contains `status: "accepted"`, `message_id`, and
+`delivery_confirmed: false`. This is protocol acceptance, not a delivery/read
+receipt. `local_store_warning: true` means acceptance succeeded but indexing
+failed; do not resend to fix the cache. There is one send invocation and no CLI
+retry. The protocol library may reconnect or retry internally. A timeout,
+interruption, native exception, or invalid result after possible dispatch leaves
+the outcome unknown; inspect the actual chat before any manual repeat.
 
-The store must already exist, belong to the current user, and have no group/other
-permissions (normally `0700`). Its existing `session.db`, `wacli.db`, sidecars,
-and known backend markers must also be private (normally `0600`). The binary
-and all paths must be direct, without symlinks, parent traversal, unsafe owners,
-or writable ancestors. Regular files with multiple hard links and special files
-are rejected. On macOS `/tmp` and `/var`, and many Homebrew executable paths,
-are symlinks: select the direct path yourself after checking its target.
-Preflight failures do not repair permissions, create an account, or initiate pairing.
-If `.send.sock` exists, the wrapper refuses execution; stop its owning sync process
-through normal controls. It does not remove locks or sockets.
+The account store has an exclusive nonblocking lock. Pair, sync, and send cannot
+run concurrently against it. Sends have a 50-second worker deadline, connection
+waits 20 seconds, pairing at most 150 seconds including cleanup. The worker has
+bounded input/result pipes and a minimal environment. Native and Python raw logs
+are suppressed at the file descriptor level. Process-group cleanup bounds native
+blocking calls. This does not impose a native-memory or filesystem-I/O quota.
 
-Only exact phone numbers/JIDs are accepted. Groups, contact names, hidden-user
-LIDs, broadcasts, attachments, mentions, replies, and batches are unsupported.
-Self-sends remain blocked by default. An intentional test to your own linked
-account can use `--allow-self` together with `--execute`; the backend warns that
-self delivery is not guaranteed. Booking integrations should never add this flag.
-Every send includes **`--no-preview`**, preventing automatic URL-preview fetches
-by the backend's reviewed text-send path.
+For booking notices, retain a durable caller ledger: record the authoritative
+booking/event key **before dispatch**, block repeats of pending/uncertain
+attempts, and mark acceptance afterward. This CLI does not replace that ledger
+or promise exactly-once delivery.
 
-Success is JSON with `status: "accepted"`, `message_id`, and
-`delivery_confirmed: false`. It means protocol acceptance, **not delivery or
-read confirmation**. `local_store_warning: true` means the backend reported an
-index write problem after acceptance; its private warning text is suppressed.
+## Sync and read one chat
 
-The wrapper invokes the backend once, with a 40-second backend timeout, a
-50-second child deadline, and 64 KiB output caps per stream. It never automatically
-retries. The backend itself can reconnect or perform protocol retries.
-After launch, any backend error, timeout, interruption, malformed output, or
-unexpected recipient is `send_unknown`: inspect the actual chat before deliberately
-repeating. A recipient mismatch is detected **after** possible dispatch; it cannot
-undo a send. `send_not_started` means the subprocess could not be launched.
-Argument/preflight errors mean this wrapper did not launch the backend.
-Exit code is 0 for a valid dry-run, history output, or acceptance; 1 for a redacted error.
+```sh
+# Receive available selected-chat text events for a bounded interval.
+.venv/bin/python whatsapp_cli.py sync --store /absolute/path/to/cli-store \
+  --chat '+12025550123' --seconds 30 --limit 200 --execute
 
-There is no cross-invocation ledger or deduplication. For booking integrations,
-keep durable caller-side state keyed by the authoritative booking ID, record an
-attempt before dispatch, and reconcile uncertain outcomes instead of retrying.
+# Read the local index; no connection or sync occurs during history reads.
+.venv/bin/python whatsapp_cli.py history \
+  --db /absolute/path/to/cli-store/messages.sqlite3 --chat '+12025550123' \
+  --since 2026-01-01T00:00:00Z --until 2026-01-02T00:00:00Z --limit 20 --execute
+```
+
+Sync accepts 1–120 seconds and 1–200 newly cached rows. It handles selected-chat
+live and available history-sync events, without requesting an exhaustive history
+export. Only exact phone-address matches are indexed; unrelated LIDs are never
+inferred to belong to that person. A WhatsApp LID-addressed chat can therefore be
+absent from this phone-scoped cache. Sync does not enumerate contacts or chats,
+send read receipts deliberately, or expose session keys. The protocol client can
+still receive account-wide events, metadata, and protocol history automatically;
+selection limits the CLI's text index, not all data received by the native client.
+
+The cache stores plain text from the selected chat, skipping media, edits,
+view-once, and disappearing payloads. Available revocation events purge indexed
+text and retain a tombstone. Replay cannot restore those rows. Cache pruning at
+writes retains a 31-day window and at most 10,000 rows; pruning is not a background
+erasure service. Revocations/deletions missed while offline and backup copies can
+remain. Cache status is never presented as complete server history.
+
+History uses read-only/query-only SQLite, bound parameters, restricted access to
+an ordinary messages table, and query deadlines. Dates require explicit timezones;
+start is inclusive, end exclusive. The window is at most **31 days**, results
+**200 rows**, text **10,000 characters**. JSON Lines are newest first and escape
+terminal controls. Revoked, deleted, and purged rows are excluded. Reading live
+WAL databases may create/use coordination sidecars. No zero-write guarantee is
+made for SQLite coordination or the OS.
 
 ## Privacy and security
 
-**wacli 0.20.0 accepts text only through `--message`.** Therefore the body and
-recipient can be visible in the child process arguments to local monitoring
-software or another process running as the same user. stdin at the Python entry
-point does not remove that backend limitation. This version is unsuitable if
-your requirements prohibit that exposure.
+The native backend has access to the **whole linked account** and persists
+cryptographic session material. The session database and text cache are not
+encrypted by this CLI; protect disk, backups, device access, and local user
+account. History stdout intentionally contains requested text. No account keys,
+QR data, raw logs, account databases, or private message output belong in GitHub.
 
-The wrapper does not persist bodies, sessions, telemetry, logs, or media and has
-no network client. Executed sends let wacli access the linked account, connect to
-WhatsApp, update its credential/index files, and retain sent text in its index.
-Those stores are sensitive: protect your user account, disk, backups, and linked
-devices. File modes do not encrypt databases. History stdout intentionally
-contains private message text; terminals and callers control its retention.
-Never commit captured output or account files.
+Checks reduce accidental scope expansion and unsafe paths; they do not isolate
+root or a compromised same-user process, prevent all path races, or establish
+that upstream native code is vulnerability-free. Release hashes establish byte
+integrity relative to published artifacts, not an independent security audit.
 
-The child has a minimal environment: no inherited proxy settings, WACLI account
-overrides, or dynamic-loader variables. New child-created files use a private
-umask. Raw backend stdout/stderr are never echoed; accepted IDs and a boolean
-store warning are the only selected success fields.
-
-Checks protect against accidental scope expansion and unsafe pre-existing paths.
-They do not isolate a compromised same-user process or remove all path races
-between validation and execution. A digest pins bytes, not the entire OS,
-linked account, dynamic libraries, or upstream dependency chain.
-
-See [SECURITY_REVIEW.md](SECURITY_REVIEW.md) for the pre-publication review,
-test evidence, and residual risks, and [SECURITY.md](SECURITY.md) for reporting.
-
-MIT license. Interface and redacted-validation patterns are adapted from
-messages-cli-python; wacli is a separate MIT-licensed dependency, not bundled here.
+See [SECURITY_REVIEW.md](SECURITY_REVIEW.md) and [SECURITY.md](SECURITY.md).
+The CLI is MIT licensed, with retained messages-cli-python attribution. Neonize
+is a separately installed Apache-2.0 dependency; its native code/dependency
+licenses remain upstream. No native binaries or account data are bundled here.

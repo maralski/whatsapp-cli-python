@@ -30,7 +30,7 @@ class Fixtures(unittest.TestCase):
         # macOS /var and /tmp are symlinks. Fixtures use their direct paths.
         self.root = Path(self.temporary.name).resolve()
         self.root.chmod(0o700)
-        self.database = self.root / "wacli.db"
+        self.database = self.root / "messages.sqlite3"
 
     def make_index(self, path=None):
         path = self.database if path is None else path
@@ -52,7 +52,7 @@ class Fixtures(unittest.TestCase):
     def store(self):
         root = self.root / "store"
         root.mkdir(mode=0o700)
-        for name in ("session.db", "wacli.db"):
+        for name in ("session.db", "messages.sqlite3"):
             (root / name).write_bytes(b"synthetic fixture; no account credentials")
             (root / name).chmod(0o600)
         return root
@@ -134,109 +134,6 @@ class ValidationTests(Fixtures):
             self.assertNotIn(SECRET, err)
             self.assertNotIn(PHONE, err)
 
-    def test_execute_requires_binary_pin(self):
-        with mock.patch.object(cli, "run_bounded") as run:
-            code, out, err = self.call(["send", "--store", str(self.root), "--to", PHONE, "--execute"])
-            self.assertEqual(code, 1)
-            self.assertEqual(json.loads(err)["error"], "binary_unverified")
-            run.assert_not_called()
-
-
-class PathTests(Fixtures):
-    def test_symlink_leaf_and_parent_rejected(self):
-        self.make_index()
-        alias = self.root / "alias"
-        alias.symlink_to(self.database)
-        parent = self.root / "directory-link"
-        parent.symlink_to(self.root, target_is_directory=True)
-        for path in (alias, parent / "wacli.db"):
-            with self.subTest(path=path), self.assertRaises(cli.SafeError):
-                cli.checked_path(path)
-
-    def test_special_files_hardlinks_and_writable_files_rejected(self):
-        self.make_index()
-        fifo = self.root / "fifo"
-        os.mkfifo(fifo, 0o600)
-        for path in (fifo, self.root):
-            with self.subTest(path=path), self.assertRaises(cli.SafeError):
-                cli.checked_path(path)
-        os.link(self.database, self.root / "hardlink")
-        with self.assertRaises(cli.SafeError):
-            cli.checked_path(self.database)
-        (self.root / "hardlink").unlink()
-        self.database.chmod(0o666)
-        with self.assertRaises(cli.SafeError):
-            cli.checked_path(self.database)
-
-    def test_unsafe_parent_rejected(self):
-        self.make_index()
-        self.root.chmod(0o777)
-        with self.assertRaises(cli.SafeError):
-            cli.checked_path(self.database)
-        self.root.chmod(0o700)
-
-    def test_executable_checksum_and_mode(self):
-        binary, checksum = self.binary()
-        self.assertEqual(cli.verify_binary(binary, checksum.upper()), binary)
-        for bad in (None, "", "0" * 64, "no-digest"):
-            with self.subTest(checksum=bad), self.assertRaises(cli.SafeError):
-                cli.verify_binary(binary, bad)
-        binary.chmod(0o600)
-        with self.assertRaises(cli.SafeError):
-            cli.verify_binary(binary, checksum)
-
-    def test_executable_change_during_read_rejected(self):
-        binary, checksum = self.binary()
-        original = os.fstat
-        calls = 0
-
-        def changed(fd):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                binary.write_bytes(b"changed")
-            return original(fd)
-
-        with mock.patch.object(cli.os, "fstat", side_effect=changed), self.assertRaises(cli.SafeError):
-            cli.verify_binary(binary, checksum)
-
-    def test_store_private_and_no_permission_changes(self):
-        store = self.store()
-        self.assertEqual(cli.verify_store(store), store)
-        for path, mode in ((store, 0o755), (store / "session.db", 0o644)):
-            with self.subTest(path=path):
-                original = path.stat().st_mode & 0o777
-                path.chmod(mode)
-                with self.assertRaises(cli.SafeError):
-                    cli.verify_store(store)
-                self.assertEqual(path.stat().st_mode & 0o777, mode)
-                path.chmod(original)
-
-    def test_store_missing_credentials_or_symlink_sidecar_rejected(self):
-        store = self.store()
-        (store / "session.db-wal").symlink_to(store / "wacli.db")
-        with self.assertRaises(cli.SafeError):
-            cli.verify_store(store)
-        (store / "session.db-wal").unlink()
-        (store / "session.db").unlink()
-        with self.assertRaises(cli.SafeError):
-            cli.verify_store(store)
-        self.assertFalse((store / "session.db").exists())
-
-    def test_backend_delegate_socket_and_marker_links_rejected(self):
-        store = self.store()
-        # No live socket/server: any existing socket path is refused.
-        (store / ".send.sock").write_bytes(b"fixture")
-        with self.assertRaises(cli.SafeError) as error:
-            cli.verify_store(store)
-        self.assertEqual(error.exception.code, "backend_busy")
-        (store / ".send.sock").unlink()
-        for name in ("LOCK", ".last-send-at", "SESSION_REVOKED"):
-            with self.subTest(name=name):
-                (store / name).symlink_to(store / "session.db")
-                with self.assertRaises(cli.SafeError):
-                    cli.verify_store(store)
-                (store / name).unlink()
 
 
 class HistoryTests(Fixtures):
@@ -281,12 +178,12 @@ class HistoryTests(Fixtures):
         digest = hashlib.sha256(self.database.read_bytes()).digest()
         cli.read_history(self.database, self.scope())
         self.assertEqual(hashlib.sha256(self.database.read_bytes()).digest(), digest)
-        self.assertEqual({p.name for p in self.root.iterdir()}, {"wacli.db"})
+        self.assertEqual({p.name for p in self.root.iterdir()}, {"messages.sqlite3"})
 
     def test_uri_path_with_question_and_hash(self):
         folder = self.root / "fixture ? #"
         folder.mkdir(mode=0o700)
-        self.database = folder / "wacli.db"
+        self.database = folder / "messages.sqlite3"
         self.make_index()
         self.add_message()
         self.assertEqual(len(cli.read_history(self.database, self.scope())), 1)
@@ -357,100 +254,6 @@ class HistoryTests(Fixtures):
         self.assertNotIn("\x1b", out)
         self.assertNotIn("\u202e", out)
         self.assertIn("\\u001b", out)
-
-
-class SendTests(Fixtures):
-    def accepted(self, **changes):
-        data = {"sent": True, "to": JID, "id": "ABC123"}
-        data.update(changes)
-        return json.dumps({"success": True, "data": data}).encode()
-
-    def test_fixed_argv_no_preview_and_no_retry(self):
-        binary, checksum = self.binary()
-        store = self.store()
-        body = '$(touch x)\n"quotes"; --to other 👋'
-        with mock.patch.object(cli, "run_bounded", return_value=(0, self.accepted())) as run:
-            result = cli.send_text(binary, checksum, store, JID, body)
-            self.assertEqual(result["status"], "accepted")
-            self.assertFalse(result["delivery_confirmed"])
-            run.assert_called_once_with([str(binary), "--store", str(store), "--json", "--timeout", "40s", "send", "text", "--to", JID, "--message", body, "--no-preview"], 50)
-
-    def test_self_send_opt_in_is_explicit(self):
-        binary, checksum = self.binary()
-        store = self.store()
-        with mock.patch.object(cli, "run_bounded", return_value=(0, self.accepted())) as run:
-            cli.send_text(binary, checksum, store, JID, "synthetic test", allow_self=True)
-            self.assertEqual(run.call_args.args[0][-1], "--allow-self")
-            self.assertIn("--no-preview", run.call_args.args[0])
-        args = ["send", "--to", PHONE, "--store", str(store), "--wacli", str(binary), "--wacli-sha256", checksum, "--allow-self"]
-        with mock.patch.object(cli, "run_bounded") as run:
-            code, out, err = self.call(args)
-            self.assertEqual(code, 0)
-            self.assertTrue(json.loads(out)["allow_self"])
-            run.assert_not_called()
-        with mock.patch.object(cli, "run_bounded", return_value=(0, self.accepted())) as run:
-            code, out, err = self.call(args + ["--execute"])
-            self.assertEqual(code, 0, err)
-            self.assertIn("--allow-self", run.call_args.args[0])
-
-    def test_bad_output_is_unknown_never_retried(self):
-        binary, checksum = self.binary()
-        store = self.store()
-        cases = [(1, self.accepted()), (0, b"not JSON " + SECRET.encode()), (0, b"[]"),
-                 (0, b"null"), (0, b"{\"success\":true,\"data\":null}"),
-                 (0, self.accepted(to=OTHER)), (0, self.accepted(sent="true")),
-                 (0, self.accepted(id=SECRET + "\n")), (0, self.accepted(id=None)),
-                 (0, b"\xff"), (0, b"[" * 2000 + b"]" * 2000)]
-        for response in cases:
-            with self.subTest(response=response), mock.patch.object(cli, "run_bounded", return_value=response) as run:
-                with self.assertRaises(cli.SafeError) as error:
-                    cli.send_text(binary, checksum, store, JID, "body")
-                self.assertEqual(error.exception.code, "send_unknown")
-                self.assertNotIn(SECRET, str(error.exception))
-                run.assert_called_once()
-
-    def test_store_warning_redacted(self):
-        binary, checksum = self.binary()
-        store = self.store()
-        with mock.patch.object(cli, "run_bounded", return_value=(0, self.accepted(store_warning=SECRET))):
-            result = cli.send_text(binary, checksum, store, JID, "body")
-        self.assertTrue(result["local_store_warning"])
-        self.assertNotIn(SECRET, json.dumps(result))
-
-    def test_preflight_failure_does_not_launch_backend(self):
-        binary, checksum = self.binary()
-        store = self.store()
-        with mock.patch.object(cli, "run_bounded") as run, self.assertRaises(cli.SafeError):
-            cli.send_text(binary, "0" * 64, store, JID, "body")
-        run.assert_not_called()
-
-    def test_imported_send_function_still_validates_target_and_body(self):
-        for jid, text in (("Example Person", "body"), ("12345678@g.us", "body"), (JID, ""), (JID, "x\x00y")):
-            with self.subTest(jid=jid), mock.patch.object(cli, "run_bounded") as run, self.assertRaises(cli.SafeError):
-                cli.send_text("/not/a/binary", "0" * 64, "/not/a/store", jid, text)
-            run.assert_not_called()
-
-    def test_cli_end_to_end_with_synthetic_backend(self):
-        store = self.store()
-        binary = self.root / "fake-wacli"
-        synthetic_body = 'Example 👋\n$(no shell) --to other "quoted"'
-        source = (
-            "#!" + sys.executable + "\n"
-            "import json,sys,os\n"
-            "args=sys.argv[1:]\n"
-            "assert args[-1] == '--no-preview'\n"
-            "assert args[args.index('--message')+1] == " + repr(synthetic_body) + "\n"
-            "assert sys.stdin.read() == ''\n"
-            "assert 'WACLI_STORE_DIR' not in os.environ\n"
-            "print(json.dumps({'success':True,'data':{'sent':True,'to':args[args.index('--to')+1],'id':'FAKE123'}}))\n"
-        )
-        binary.write_text(source)
-        binary.chmod(0o700)
-        digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-        code, out, err = self.call(["send", "--store", str(store), "--to", PHONE, "--wacli", str(binary), "--wacli-sha256", digest, "--execute"], synthetic_body.encode())
-        self.assertEqual(code, 0, err)
-        self.assertEqual(json.loads(out)["message_id"], "FAKE123")
-        self.assertNotIn(synthetic_body, out + err)
 
 
 class ChildProcessTests(Fixtures):

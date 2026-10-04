@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Bounded local WhatsApp history and explicit text sends through wacli."""
+"""Private account linking, bounded history, and direct WhatsApp text sends."""
 
 import argparse
+from contextlib import closing
 import datetime as dt
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,12 +17,11 @@ import sys
 import time
 from urllib.parse import quote
 
-VERSION = "0.1.1"
+VERSION = "0.2.0"
 MAX_TEXT = 10000
 MAX_INPUT_BYTES = 40000
 MAX_ROWS = 200
 MAX_OUTPUT_BYTES = 65536
-MAX_BINARY_BYTES = 256 * 1024 * 1024
 SEND_TIMEOUT = 50
 HISTORY_TIMEOUT = 3
 ID_PATTERN = r"[A-Za-z0-9_-]{1,128}"
@@ -136,7 +135,7 @@ def checked_path(value, *, directory=False, private=False):
 
 
 def read_history(database, scope):
-    """Read only the supplied index; do not discover credentials or invoke wacli."""
+    """Read only the supplied index; do not connect or discover credentials."""
     path, _ = checked_path(database)
     for suffix in ("-wal", "-shm", "-journal"):
         sidecar = Path(str(path) + suffix)
@@ -209,77 +208,95 @@ def read_history(database, scope):
             connection.close()
 
 
-def verify_binary(value, expected):
-    if not expected or not re.fullmatch(r"[0-9a-fA-F]{64}", expected):
-        raise SafeError("binary_unverified", "An independently verified wacli executable SHA-256 is required for execution.")
-    path, before = checked_path(value)
-    try:
-        if not before.st_mode & 0o111 or not 0 < before.st_size <= MAX_BINARY_BYTES:
-            raise ValueError()
-        digest = hashlib.sha256()
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "rb") as source:
-            opened = os.fstat(source.fileno())
-            if fingerprint(opened) != fingerprint(before):
-                raise ValueError()
-            total = 0
-            while True:
-                block = source.read(1024 * 1024)
-                if not block:
-                    break
-                total += len(block)
-                if total > MAX_BINARY_BYTES:
-                    raise ValueError()
-                digest.update(block)
-            after = os.fstat(source.fileno())
-        if digest.hexdigest() != expected.lower() or fingerprint(after) != fingerprint(opened) or fingerprint(path.lstat()) != fingerprint(after):
-            raise ValueError()
-        return path
-    except (ValueError, OSError):
-        raise SafeError("binary_unverified", "The selected executable is unsafe, changed during verification, or does not match its trusted SHA-256.") from None
-
-
-def fingerprint(info):
-    # Reading the file may update atime; that is not an executable modification.
-    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
-            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-
-
 def verify_store(value):
     path, _ = checked_path(value, directory=True, private=True)
-    # A running daemon could be a different executable and have webhooks enabled.
-    # Keep execution confined to the pinned foreground backend.
-    if os.path.lexists(path / ".send.sock"):
-        raise SafeError("backend_busy", "A send delegate socket exists in this store. Stop the owning sync process through its normal controls before using this CLI.")
-    # Stat only; do not read credentials. No automatic auth, creation, or chmod.
-    for name in ("session.db", "wacli.db"):
-        checked_path(path / name, private=True)
-        for suffix in ("-wal", "-shm", "-journal"):
-            sidecar = path / (name + suffix)
-            if os.path.lexists(sidecar):
-                checked_path(sidecar, private=True)
-    for name in ("LOCK", ".last-send-at", "SESSION_REVOKED"):
+    if "?" in str(path) or "#" in str(path):
+        raise SafeError("invalid_path", "Account store paths cannot contain URL query or fragment characters.")
+    for name in ("account.json", "session.db", "messages.sqlite3", ".cli.lock"):
         item = path / name
-        if os.path.lexists(item):
+        if name != ".cli.lock" or os.path.lexists(item):
             checked_path(item, private=True)
+        for suffix in ("-wal", "-shm", "-journal"):
+            if os.path.lexists(str(item) + suffix):
+                checked_path(str(item) + suffix, private=True)
+    try:
+        if (path / "account.json").stat().st_size > 1024:
+            raise ValueError()
+        if json.loads((path / "account.json").read_text()) != {"format": "whatsapp-cli-python", "version": 1}:
+            raise ValueError()
+    except (ValueError, OSError):
+        raise SafeError("foreign_store", "Use a store created by init. Existing account stores are not migrated automatically.") from None
     return path
 
 
-def run_bounded(argv, timeout):
+def session_identity(store):
+    """Read only the public device address, never session key columns."""
+    connection = None
+    try:
+        connection = sqlite3.connect("file:" + quote(str(store / "session.db"), safe="/") + "?mode=ro", uri=True, timeout=1)
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA trusted_schema=OFF")
+        connection.set_progress_handler(lambda: 1, 10000)
+        schema = connection.execute("SELECT type,sql FROM sqlite_master WHERE name='whatsmeow_device'").fetchone()
+        if schema is None:
+            return None
+        if schema[0] != "table" or not schema[1].upper().startswith("CREATE TABLE"):
+            raise ValueError()
+        fields = connection.execute("PRAGMA table_xinfo(whatsmeow_device)").fetchall()
+        if not any(row[1] == "jid" and row[6] == 0 for row in fields):
+            raise ValueError()
+        rows = connection.execute("SELECT jid FROM whatsmeow_device LIMIT 2").fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1 or not isinstance(rows[0][0], str) or not re.fullmatch(r"[1-9][0-9]{6,14}:[0-9]{1,5}@s\.whatsapp\.net", rows[0][0]):
+            raise ValueError()
+        return rows[0][0]
+    except (sqlite3.Error, ValueError, TypeError):
+        raise SafeError("session_unavailable", "A single compatible account session is required; no automatic pairing or repair attempted.") from None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def initialize_store(value):
+    path = local_path(value)
+    if "?" in str(path) or "#" in str(path):
+        raise SafeError("invalid_path", "Account store paths cannot contain URL query or fragment characters.")
+    checked_path(path.parent, directory=True)
+    if os.path.lexists(path):
+        raise SafeError("store_exists", "Initialization requires a new store directory; existing data is never overwritten.")
+    old_umask = os.umask(0o077)
+    try:
+        path.mkdir(mode=0o700)
+        (path / "account.json").write_text(json.dumps({"format": "whatsapp-cli-python", "version": 1}))
+        with closing(sqlite3.connect(path / "session.db")) as connection, connection:
+            connection.execute("PRAGMA user_version=0")
+        with closing(sqlite3.connect(path / "messages.sqlite3")) as connection, connection:
+            connection.execute("CREATE TABLE messages (chat_jid TEXT NOT NULL, msg_id TEXT NOT NULL, ts INTEGER NOT NULL, from_me INTEGER NOT NULL, text TEXT, revoked INTEGER DEFAULT 0, deleted_for_me INTEGER DEFAULT 0, payload_purged_at INTEGER, UNIQUE(chat_jid,msg_id))")
+            connection.execute("CREATE INDEX idx_messages_chat_ts ON messages(chat_jid,ts)")
+        return {"status": "initialized", "linked": False}
+    finally:
+        os.umask(old_umask)
+
+
+def run_bounded(argv, timeout, request=None):
     """One POSIX child; bound captured output and redact all backend errors."""
-    # Do not pass ambient proxies, dynamic-loader hooks, account overrides,
-    # WACLI options, or secrets through to the backend.
+    # Do not pass ambient proxies, loader hooks, account overrides, or secrets.
     environment = {"PATH": "/usr/bin:/bin", "LANG": "C", "HOME": str(Path.home())}
     process = None
     try:
         process = subprocess.Popen(
-            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            argv, stdin=subprocess.PIPE if request is not None else subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, env=environment, shell=False,
             close_fds=True, start_new_session=True, umask=0o077,
         )
         captured = {"stdout": bytearray(), "stderr": bytearray()}
         deadline = time.monotonic() + timeout
         with selectors.DefaultSelector() as selector:
+            pending = memoryview(request) if request is not None else None
+            if pending is not None:
+                os.set_blocking(process.stdin.fileno(), False)
+                selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
             selector.register(process.stdout, selectors.EVENT_READ, "stdout")
             selector.register(process.stderr, selectors.EVENT_READ, "stderr")
             while selector.get_map():
@@ -287,6 +304,16 @@ def run_bounded(argv, timeout):
                 if remaining <= 0:
                     raise TimeoutError()
                 for key, _ in selector.select(remaining):
+                    if key.data == "stdin":
+                        if pending:
+                            try:
+                                pending = pending[os.write(key.fileobj.fileno(), pending[:8192]):]
+                            except BlockingIOError:
+                                continue
+                        if not pending:
+                            selector.unregister(key.fileobj)
+                            process.stdin.close()
+                        continue
                     chunk = os.read(key.fileobj.fileno(), 8192)
                     if not chunk:
                         selector.unregister(key.fileobj)
@@ -311,34 +338,65 @@ def run_bounded(argv, timeout):
             except ProcessLookupError:
                 pass
             process.wait()
+            if process.stdin is not None and not process.stdin.closed:
+                process.stdin.close()
             process.stdout.close()
             process.stderr.close()
 
 
-def send_text(binary, checksum, store, jid, text, *, allow_self=False):
-    jid = phone_jid(jid)
-    validate_text(text)
-    path = verify_binary(binary, checksum)
-    selected_store = verify_store(store)
-    argv = [str(path), "--store", str(selected_store), "--json", "--timeout", "40s",
-            "send", "text", "--to", jid, "--message", text, "--no-preview"]
-    if allow_self:
-        argv.append("--allow-self")
-    code, raw = run_bounded(argv, SEND_TIMEOUT)
+def backend_operation(command, store, *, jid=None, text=None, allow_self=False, seconds=30, limit=200):
+    selected = verify_store(store)
+    identity = session_identity(selected)
+    if command == "pair":
+        if identity:
+            raise SafeError("already_linked", "Store already linked; pairing a second account is forbidden.")
+        # QR credentials must never enter logs or pipes. The worker opens /dev/tty.
+        try:
+            with open("/dev/tty", "r+") as terminal:
+                if not terminal.isatty():
+                    raise OSError()
+        except OSError:
+            raise SafeError("terminal_required", "Run pair yourself in an interactive terminal to scan the QR code.") from None
+    elif not identity:
+        raise SafeError("not_linked", "Run pair explicitly in an interactive terminal first; ordinary commands never pair.")
+    if jid is not None:
+        jid = phone_jid(jid)
+    if command == "send":
+        validate_text(text)
+        if identity.split(":")[0] + "@s.whatsapp.net" == jid and not allow_self:
+            raise SafeError("self_send_blocked", "Sending to the linked account requires explicit --allow-self.")
+    request = {"command": command, "store": str(selected), "identity": identity,
+               "jid": jid, "text": text, "seconds": seconds, "limit": limit, "allow_self": allow_self}
+    worker = Path(__file__).absolute().with_name("whatsapp_backend.py")
+    checked_path(worker)
+    code, raw = run_bounded([sys.executable, "-I", "-B", str(worker)],
+                            150 if command == "pair" else seconds + 25 if command == "sync" else SEND_TIMEOUT,
+                            json.dumps(request, ensure_ascii=True).encode())
     try:
-        envelope = json.loads(raw)
-        data = envelope["data"]
-        if code != 0 or envelope["success"] is not True or not isinstance(data, dict):
+        data = json.loads(raw)
+        if code != 0 or not isinstance(data, dict):
             raise ValueError()
-        if data.get("sent") is not True or data.get("to") != jid:
+        if data.get("error") in {"backend_unavailable", "backend_busy", "not_connected", "pair_required", "sync_failed"}:
+            raise SafeError(data["error"], "Direct backend unavailable or account operation stopped; no automatic retry.")
+        expected = {"send": "accepted", "sync": "synced", "pair": "linked"}[command]
+        if data.get("status") != expected:
             raise ValueError()
-        if not isinstance(data.get("id"), str) or not re.fullmatch(ID_PATTERN, data["id"]):
-            raise ValueError()
-        # A local index write failure does not undo protocol acceptance.
-        return {"status": "accepted", "message_id": data["id"], "delivery_confirmed": False,
-                "local_store_warning": bool(data.get("store_warning"))}
+        if command == "send":
+            if data.get("delivery_confirmed") is not False or not isinstance(data.get("message_id"), str) or not re.fullmatch(ID_PATTERN, data["message_id"]):
+                raise ValueError()
+            return {"status": "accepted", "message_id": data["message_id"], "delivery_confirmed": False,
+                    "local_store_warning": data.get("local_store_warning") is True}
+        if command == "sync":
+            if type(data.get("stored")) is not int or not 0 <= data["stored"] <= limit:
+                raise ValueError()
+            return {"status": "synced", "stored": data["stored"], "complete_history": False}
+        return {"status": "linked"}
     except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
-        raise SafeError("send_unknown", "Send outcome is unknown. Inspect the actual chat before any manual repeat.") from None
+        raise SafeError("send_unknown" if command == "send" else "operation_unknown", "Operation outcome unknown. Inspect account state before any manual repeat.") from None
+
+
+def send_text(store, jid, text, *, allow_self=False):
+    return backend_operation("send", store, jid=jid, text=text, allow_self=allow_self)
 
 
 def parser():
@@ -346,19 +404,23 @@ def parser():
     result.add_argument("--version", action="version", version="whatsapp-cli-python " + VERSION)
     commands = result.add_subparsers(dest="command", required=True, parser_class=Parser)
     history = commands.add_parser("history", help="Preview or read one bounded local chat", allow_abbrev=False)
-    history.add_argument("--db", required=True, help="Absolute path to the wacli message index (wacli.db)")
-    history.add_argument("--chat", required=True, help="Exact international phone number or phone JID")
+    history.add_argument("--db", required=True, help="Absolute path to messages.sqlite3")
+    history.add_argument("--chat", required=True)
     history.add_argument("--since", required=True)
     history.add_argument("--until", required=True)
     history.add_argument("--limit", type=int, default=20)
     history.add_argument("--execute", action="store_true")
-    send = commands.add_parser("send", help="Preview or send UTF-8 stdin to one exact recipient", allow_abbrev=False)
-    send.add_argument("--to", required=True)
-    send.add_argument("--store", required=True, help="Absolute path to an already linked private wacli store")
-    send.add_argument("--wacli", help="Absolute direct path to a trusted wacli 0.20.0 executable")
-    send.add_argument("--wacli-sha256", help="Independently verified executable SHA-256 (not archive checksum)")
-    send.add_argument("--execute", action="store_true")
-    send.add_argument("--allow-self", action="store_true", help="Explicitly opt into sending to the linked account for an intentional self-test; delivery is not guaranteed")
+    for name in ("init", "status", "pair", "sync", "send"):
+        command = commands.add_parser(name, allow_abbrev=False)
+        command.add_argument("--store", required=True, help="Absolute path to a private CLI account store")
+        command.add_argument("--execute", action="store_true")
+        if name in ("send", "sync"):
+            command.add_argument("--to" if name == "send" else "--chat", required=True)
+        if name == "send":
+            command.add_argument("--allow-self", action="store_true")
+        if name == "sync":
+            command.add_argument("--seconds", type=int, default=30, help="Receive selected-chat text events for 1–120 seconds")
+            command.add_argument("--limit", type=int, default=200, help="Maximum selected-chat rows stored (1–200)")
     return result
 
 
@@ -384,15 +446,26 @@ def main(argv=None, stdin=None, stdout=None, stderr=None):
                 for row in read_history(args.db, scope):
                     emit(row, stdout)
         else:
-            jid = phone_jid(args.to)
             local_path(args.store)
-            body = input_body(sys.stdin.buffer if stdin is None else stdin)
+            body = input_body(sys.stdin.buffer if stdin is None else stdin) if args.command == "send" else None
+            jid = phone_jid(args.to if args.command == "send" else args.chat) if args.command in ("send", "sync") else None
+            if args.command == "sync" and (not 1 <= args.seconds <= 120 or not 1 <= args.limit <= MAX_ROWS):
+                raise SafeError("invalid_scope", "Sync requires 1–120 seconds and a row limit of 1–200.")
             if not args.execute:
-                emit({"status": "dry_run", "command": "send", "message_chars": len(body), "no_preview": True, "allow_self": args.allow_self}, stdout)
+                data = {"status": "dry_run", "command": args.command}
+                if body is not None:
+                    data.update(message_chars=len(body), no_preview=True, allow_self=args.allow_self)
+                emit(data, stdout)
+            elif args.command == "init":
+                emit(initialize_store(args.store), stdout)
+            elif args.command == "status":
+                emit({"status": "local", "linked": session_identity(verify_store(args.store)) is not None,
+                      "online_checked": False}, stdout)
+            elif args.command == "send":
+                emit(send_text(args.store, jid, body, allow_self=args.allow_self), stdout)
             else:
-                if args.wacli is None:
-                    raise SafeError("binary_unverified", "Specify --wacli and its independently verified --wacli-sha256 to execute.")
-                emit(send_text(args.wacli, args.wacli_sha256, args.store, jid, body, allow_self=args.allow_self), stdout)
+                emit(backend_operation(args.command, args.store, jid=jid,
+                                       seconds=getattr(args, "seconds", 30), limit=getattr(args, "limit", 200)), stdout)
         return 0
     except SafeError as error:
         emit({"error": error.code, "message": str(error)}, stderr)

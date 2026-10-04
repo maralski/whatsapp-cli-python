@@ -1,123 +1,115 @@
-# Pre-publication security review — 0.1.1
+# Pre-publication security review — 0.2.0
 
-Reviewed on 4 October 2026, before publication of the reviewed version. This is a maintainer
-review with automated checks, not an independent audit or certification.
+Reviewed 4 October 2026. Maintainer review plus automated checks; not an
+independent audit or certification.
 
 ## Scope and evidence
 
-- All runtime code in `whatsapp_cli.py`, all synthetic tests, documentation,
-  licensing, ignore rules, and the CI workflow were reviewed.
-- Runtime source SHA-256:
-  `28c186d02257353e833b7fba0939d88aebee81d9fe8c7eee3f021b2bd66ec7cf`.
-- Test source SHA-256:
-  `d62bda3bc3979b55ddfe59e28f9611f503275290e8516ff06f217481805e7474`.
-- **42 tests passed** on macOS with Python **3.9.6, 3.11.6, and 3.14**.
-  Tests used only synthetic fixtures and fake/local Python children. These automated tests did not send a real WhatsApp message.
-  Linux CI is configured; local validation was on macOS.
-- Installed wacli reported **0.20.0**. Its version and `send text --help` were
-  inspected without accessing any real account. Command flags, JSON envelopes,
-  SQLite schema, file writes, retries, and daemon delegation were checked against
-  [wacli revision a4f23ee](https://github.com/openclaw/wacli/tree/a4f23eef7395473931e3a44c93eacd6ebebdc313),
-  corresponding to the reviewed 0.20.0 source. The complete upstream dependency
-  chain was not independently audited; the binary is not bundled or installed.
-- The reference interface was read at
-  [messages-cli-python revision d3185fe](https://github.com/maralski/messages-cli-python/tree/d3185fe9be9af043f089b89ea3f74a5d98a3ef42).
-  Its adapted validation patterns retain MIT attribution.
+All runtime code (`whatsapp_cli.py`, `whatsapp_backend.py`), the dependency lock,
+synthetic tests, native smoke check, documentation, licensing, ignore rules and
+CI workflow were reviewed before publication. No native binaries, account stores,
+QR artifacts, real recipient data, or private outputs are published.
 
-## Threat model
+**55 offline tests pass** on this Mac with Python 3.11.6. An additional **9
+synthetic booking-adapter tests** verify preservation of the existing durable
+ledger, accepted/pending entries, concurrent dispatch, recipient guards, and
+notice confirmation. The adapter is staged separately and is not activated by
+this release. The native smoke check passes on macOS arm64: real protobuf live
+and history events, exact-chat indexing, revocation, native import and disabled
+runtime download. It never connects or instantiates an account client. No live
+pairing or send was performed for this release. CI exercises Linux/macOS and
+Python 3.10/3.11/3.14; local native validation covers macOS arm64 only.
 
-Protect against accidental sends, scope expansion, ambiguous recipients,
-executable substitution through PATH, argument/code injection, unsafe existing
-paths, noisy backend errors leaking private data, unbounded outputs, misleading
-success, and blind retries after an uncertain send. Treat CLI arguments,
-message text, index contents, and backend output as untrusted inputs.
+The direct binding was reviewed at
+[Neonize 0.5.2 revision 840dd69](https://github.com/krypton-byte/neonize/tree/840dd69fe22fe7d5e2156eeeb02574a861db22c2),
+including `_binder.py`, `download.py`, `client.py`, `events.py`, platform/media
+helpers, protobuf schemas, and `goneonize/main.go`. Its Whatsmeow revision is
+`35ae40906e74` (21 September 2026). This review checks the called text/lifecycle
+paths and integration boundaries; it is not an exhaustive audit of every Python
+or Go dependency or the full native binary.
 
-The executing user intentionally selects a trusted backend and account store.
-The wrapper is not a sandbox against malicious same-user programs, root,
-compromised Python/SQLite/OS libraries, or a malicious upstream executable.
-Those principals can already access this user's linked account and messages.
+The official macOS arm64 wheel SHA-256 is
+`670376f5479c56da35fce80ba3c0f98540a46d77364b04f4a6405f6dda783617`.
+Its bundled native library was verified against the matching official
+[0.5.2 release asset](https://github.com/krypton-byte/neonize/releases/tag/0.5.2)
+digest. Four supported native digests are pinned in `NATIVE_HASHES`. Python
+package versions and permitted wheel hashes are locked in `requirements.lock`.
+The original interface attribution remains in LICENSE, from
+[messages-cli-python revision d3185fe](https://github.com/maralski/messages-cli-python/tree/d3185fe9be9af043f089b89ea3f74a5d98a3ef42).
 
-## Findings and dispositions
+## Threat model and review findings
 
-| Area | Review result and control |
+Protect against accidental dispatch, unintended pairing, ambiguous accounts or
+recipients, shell/argument injection, unsafe paths, noisy private logs, dependency
+drift/runtime downloads, concurrent store clients, unbounded pipes and misleading
+acceptance/retries. Arguments, message contents, database rows and worker output
+are treated as untrusted. Root, malicious same-user processes, compromised OS or
+Python/native dependencies are outside the CLI's isolation guarantees.
+
+| Area | Control and reviewed behavior |
 | --- | --- |
-| Execution intent | Dry-run default for history and sends; `--execute` required. Dry-run tests forbid filesystem/account access and child launch. |
-| Recipient scope | Self-sends remain blocked by default; version 0.1.1 adds explicit `--allow-self` for an intentional self-test, still requiring `--execute`, exact recipient and no previews. Dry-run never sends even with that flag. Exact international numbers or phone JIDs only; names, groups, LIDs, broadcasts, and device-qualified JIDs rejected. The imported send function also validates. |
-| Process/code injection | No shell, eval, dynamically generated code, pass-through flags, or arbitrary backend commands. Bodies are one fixed argv value; shell metacharacters and Unicode tested through a real fake-backend subprocess. |
-| Backend selection | Explicit absolute direct path and caller-provided trusted executable SHA-256. Ownership, permissions, type, hard links, symlinks, size, and metadata checked. Hashing uses an open no-follow descriptor and bounded reads; detected changes fail closed. |
-| Ambient configuration | Explicit store; minimal child environment, no inherited proxy, WACLI account settings, or loader variables. New child files have umask `0077`. |
-| Daemon delegation | **Fixed during review:** refuse any existing `.send.sock`. A daemon could otherwise run a different binary or have webhooks enabled despite pinning the foreground executable. Concurrent same-user changes remain outside isolation guarantees. |
-| Existing backend files | **Fixed during review:** check database sidecars, `LOCK`, `.last-send-at`, and `SESSION_REVOKED` for unsafe files/links before dispatch. No automatic repair, creation, pairing, or lock removal. |
-| SQL scope and injection | One supplied index, one exact chat, bounded timezone-aware window and row count. Parameter binding, read-only/query-only connection, trusted schema disabled, restricted authorizer, ordinary-table validation, and progress limits. Views and generated required columns refused. |
-| SQLite data exposure | Project only ID, timestamp, direction, and bounded text. No contact enumeration, media-key retrieval, credential query, or rich-message decoding. Deleted/revoked/purged rows excluded. Test fixtures prove chat/date boundaries and committed WAL visibility. |
-| Resource limits | Bounded input bytes/characters, binary size/hash reads, child stdout/stderr, child deadline, history row/text limits, and query progress budget. Filesystem stalls and OS/native-library resource behavior are not fully bounded. |
-| Privacy of output | Dry-run/errors omit recipients, paths, bodies, raw backend output, and private warnings. History intentionally contains requested text, emitted as escaped JSON. Malformed backend output never appears in errors. |
-| Delivery and retry | Exactly one backend invocation per command; no wrapper retry or automatic transport fallback. Strict envelope, exact recipient, boolean success, and bounded message-ID checks. Unknown post-launch outcomes remain unknown; protocol acceptance is not delivery. Backend retries still exist. |
-| Child cleanup | Timeout/output-overflow tests exercise termination and pipe cleanup, including a leader that exits while a descendant retains pipes. Interruptions are treated as uncertain sends. |
-| Publication | Explicit source/documentation/workflow allowlist; no databases, binaries, real contacts, account paths, pairing artifacts, captured chat output, or credentials included. Ignore rules are additional protection, not a security boundary. |
-| CI | Synthetic tests only, read-only contents permission, immutable official action pins, no persisted checkout credentials, no account secrets, no `pull_request_target`, and bounded job duration. |
+| Transport | No dependency on, invocation of, or fallback to wacli. Direct pinned Neonize/Whatsmeow binding; no Desktop or browser control. |
+| Execution intent | All commands dry-run by default. Tests forbid filesystem and worker activity in previews. `--execute` is required even for local initialization/status. |
+| Pairing/account scope | Separate TTY-only pair operation, new owned-format store, no automatic migration or credential copy. One stored device selected explicitly. Multiple identities, unexpected QR, changed account, and extra pairing refused. Status returns booleans, not addresses. |
+| QR credentials | Only `/dev/tty`; never logs or JSON pipes. No phone-code login or captured QR files. Revocation remains an intentional WhatsApp UI action. |
+| Dependency integrity | All 20 Python packages pinned and hash-locked for installation; versions checked at runtime. Native library ownership/type/links/size/digest/metadata checked before C loading. Unsupported platforms fail closed. |
+| Automatic downloader | **Fixed during review:** upstream can fetch a native binary on absence/version mismatch. A disabled `neonize.download` shim is inserted BEFORE eager package import; missing/corrupt native code fails before import. A platform shim also avoids the upstream Linux `uname` shell command. Tests/smoke verify disabled downloads. |
+| Media surface | Text-only API; libmagic shim raises on media operations. No FFmpeg installation, media download/upload, preview generation or URL fetching in the called text path. Broad unused upstream dependencies remain pinned because the client imports them. |
+| Literal text | Fixed conversation protobuf bypasses upstream string mention parsing and rich link handling; link_preview=False. Text/recipient sent on bounded stdin JSON, never argv, shell, temporary body file, eval or dynamic generated code. |
+| Paths/state | Private user-owned stores, credentials, index, marker, lock and existing sidecars; no symlinks/hard links/special files/writable ancestors. New store only; umask 0077. Native raw SQLite URI injection via ?/# paths rejected. No automatic permission repair. |
+| Concurrency | Exclusive nonblocking owned-store lock for pair/sync/send. The old sender and new native store are intentionally not activated concurrently. No background daemon or webhook. |
+| Native-call bounds | Isolated Python worker, 20-second connection wait, bounded operation deadline, 64 KiB per output stream, bounded input, minimal environment and process-group cleanup. Hard process deadline applies even to Go context.Background sends. Native memory/filesystem behavior is not fully bounded. |
+| Log privacy | Python and native stdout/stderr redirected at fd level before import; a private result pipe exposes only reviewed fields. No raw exceptions, credentials or bodies in errors. |
+| Local session status | Read-only/query-only ordinary-table validation; SELECT jid only, LIMIT 2, generated/view identities rejected. No key columns queried. Public device identity is used internally and not displayed. |
+| History | Read-only/query-only SQLite, bound parameters, restricted authorizer, validated ordinary table, limited chat/date/rows/text, progress budget, revoked/deleted/purged exclusion. Views and generated required fields rejected. |
+| Text caching | Selected exact phone chat only. Available live/history plain text; media/edits/view-once/disappearing content skipped. Available revocations purge text, tombstones prevent replay restoration while retained. 31-day/10,000-row pruning at writes. Native account-wide metadata/events still occur and cannot be represented as only selected-chat access. |
+| Acceptance and retry | Protocol acceptance is not delivery. One send invocation, no CLI retry or fallback. Self-send opt-in checked both parent and worker. Unknown post-dispatch results stay unknown; cache failure after acceptance is a boolean warning. Upstream reconnect/retry behavior remains. |
+| Booking continuity | Staged replacement uses same ledger schema/path and pending-before-send transaction. Existing accepted and uncertain rows remain protected. Working installed transport is preserved until intentional native pairing and activation. |
+| Publication/CI | Explicit source allowlist; no databases/native artifacts/private output. Immutable official actions, read-only contents, no persisted checkout credentials or account secrets, synthetic tests and offline native smoke. Dependency installation is locked and wheels-only. |
 
 ## Automated security checks
 
-**Bandit 1.9.4**, all default tests, runtime source only, no `nosec` suppressions:
+- **Bandit 1.9.4:** zero medium/high findings. Two LOW findings, B404 subprocess
+  import and B603 fixed Popen call, manually reviewed. No shell; only the selected
+  Python interpreter and owned worker run; body stays on stdin; minimal env and
+  output/deadline cleanup are enforced. No suppressions.
+- **Ruff 0.16.10, F/E9:** passed for runtime, tests and native smoke source.
+- **pip-audit 2.10.1:** all 20 locked Python packages checked; **no known
+  vulnerabilities found**. This is a database snapshot, not proof of safety; the
+  bundled Go/native dependency chain is not covered by pip-audit.
+- **detect-secrets 1.5.0:** publication file scan and manual content review. The
+  intentionally fake `synthetic-private-value` redaction fixture is not an account
+  credential. The scanner also flagged four native release SHA-256 constants;
+  these are public integrity metadata, not secrets.
 
-- Zero medium- or high-severity findings.
-- Two low-severity/high-confidence findings: **B404** (`subprocess` import) and
-  **B603** (the `Popen` call). Both were manually reviewed: the subprocess is
-  necessary for the selected transport; executable bytes are pinned; the
-  argument list and command are fixed; no shell is used; input stays data;
-  inherited configuration is restricted. They are retained as reviewed
-  warnings, not represented as a clean scanner run.
-
-**Ruff 0.16.10** static correctness checks (`F,E9`) passed after removing an unused test import.
-
-**detect-secrets 1.5.0** scanned the publication files. Its only candidate value
-was the test constant `SECRET = "synthetic-private-value"`, also quoted in this
-report: an intentionally fake redaction fixture. It is not a credential.
-Developer caches are excluded from both scanning and publication. Manual content review also checks
-that only fictional example phone numbers, synthetic bodies, generic paths,
-and public source revisions are present. No real account artifacts are included.
-
-Commands used for reproducible checks (the scanners are optional developer tools,
-not runtime dependencies):
+Reproduce with:
 
 ```sh
-python3 -W error::ResourceWarning -m unittest -v
-bandit -f json whatsapp_cli.py
-detect-secrets scan --all-files --exclude-files '(^|/)(__pycache__|\.git|\.ruff_cache)/'
+python -W error::ResourceWarning -m unittest -v
+python -I -B verify_protocol.py
+bandit -f json whatsapp_cli.py whatsapp_backend.py
+ruff check --select F,E9 whatsapp_cli.py whatsapp_backend.py test_*.py verify_protocol.py
+pip-audit --disable-pip --no-deps -r requirements.lock
 ```
 
-## Residual risks and limitations
+## Residual risks and activation limits
 
-1. **Message-body exposure in backend argv.** wacli 0.20.0 has no stdin text
-   interface. Local same-user process inspection may reveal bodies/recipients.
-   This is documented prominently; confidential argv requirements need a
-   different transport or a reviewed upstream change.
-2. **Unofficial client and upstream trust.** WhatsApp Web protocol support can
-   change or accounts can be restricted. A checksum provides byte integrity,
-   not authenticity or safety. Independently verify the release source before
-   pinning it. No claim is made that all wacli/whatsmeow dependencies are free of
-   vulnerabilities. This is not the supported WhatsApp Business API.
-3. **Linked account and local retention.** A send backend accesses credentials,
-   writes account/index files, and may cache message text. Privacy depends on
-   the account, user, disk, backups, and upstream client. Private modes do not
-   encrypt data; the backend may normalize its local store file permissions.
-4. **Race and routing limits.** Path preflights cannot stop hostile concurrent
-   same-user changes. WhatsApp/backend recipient canonicalization happens
-   outside the wrapper. An output recipient mismatch is detected after possible
-   dispatch and cannot undo it.
-5. **Uncertain outcomes and duplicates.** Timeouts/errors may follow acceptance;
-   manual repeats or separate invocations can duplicate messages. The wrapper
-   has no durable ledger and the backend has protocol retries. Integrations
-   must manage idempotency themselves; there is no exactly-once guarantee.
-6. **Cached/deleted history.** Output reflects the index at read time, not full
-   server history or current device deletion state. WAL reads may create/use
-   coordination sidecars; read-only index access is not zero filesystem writes.
-7. **Validation coverage.** No live-send or delivery-receipt validation is part of the automated suite. Account pairing,
-   attachment transfer, or Windows support was tested or claimed for this
-   project. Fake end-to-end tests verify wrapper plumbing and protocol shape,
-   not the availability of WhatsApp service.
+This is an unofficial client; account restrictions, protocol changes and session
+expiry remain possible. A release digest establishes artifact integrity relative
+to published bytes, not independent authorship/security assurance. The pinned
+native library and Python imports are trusted code with full user/account access.
+Path checks leave races against same-user attackers; private modes do not encrypt
+sessions or messages. The native client may automatically process account-wide
+history/events and protocol metadata. Cached text can be incomplete, miss LID
+routing, revocations/deletions while offline, and survive in backups. SQLite WAL
+coordination may write sidecars even during read-only reads.
 
-No unresolved medium/high-severity finding was identified in the reviewed
-wrapper. The residual risks above remain part of this release's documented
-contract; publishing the source does not remove them.
+There is no exactly-once or delivery guarantee. Native protocol retries exist;
+interruption can follow acceptance. The caller must retain its durable attempt
+ledger and manually reconcile uncertain sends. The new backend has not been
+paired or live-send-tested in this release. An intentional user QR scan is needed
+before activating it for booking notices; the working installed sender remains
+unchanged until then. No account keys were extracted or migrated during review.
+
+No unresolved medium/high finding was identified in the reviewed CLI code. That
+finding is limited to this scope and does not certify the upstream native client.
