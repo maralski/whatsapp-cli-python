@@ -31,5 +31,5 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -W error::ResourceWarning -m unittest -v
-      - run: python -m pip install --require-hashes --only-binary=:all: -r requirements.lock
+      - run: 'python -m pip install --require-hashes --only-binary=:all: -r requirements.lock'
       - run: python -I -B verify_protocol.py
