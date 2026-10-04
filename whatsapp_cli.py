@@ -17,7 +17,7 @@ import sys
 import time
 from urllib.parse import quote
 
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 MAX_TEXT = 10000
 MAX_INPUT_BYTES = 40000
 MAX_ROWS = 200
@@ -385,6 +385,26 @@ def backend_operation(command, store, *, jid=None, text=None, allow_self=False, 
         data = json.loads(raw)
         if code != 0 or not isinstance(data, dict):
             raise ValueError()
+        pair_errors = {
+            "qr_render_failed": "Unable to display the pairing QR on the terminal; no automatic retry.",
+            "pair_timeout": "Pairing timed out. Check local status before trying again; scan the QR through WhatsApp Linked devices.",
+            "connect_failed": "WhatsApp connection failed before pairing completed; no automatic retry.",
+            "connection_ended": "WhatsApp ended the pairing connection; check local status before trying again.",
+            "pair_rejected": "WhatsApp rejected or ended account linking; check local status before trying again.",
+        }
+        if command == "pair" and data.get("error") in pair_errors:
+            error = data["error"]
+            details = {
+                "dns_failed": "Name resolution failed.",
+                "tls_failed": "TLS verification failed.",
+                "connection_timeout": "The connection timed out.",
+                "connection_refused": "The connection was refused.",
+                "websocket_failed": "The WhatsApp Web connection failed.",
+                "database_failed": "The session database was unavailable.",
+                "connection_closed": "The connection closed unexpectedly.",
+            }
+            detail = details.get(data.get("reason"), "")
+            raise SafeError(error, pair_errors[error] + (" " + detail if detail else ""))
         if data.get("error") in {"backend_unavailable", "backend_busy", "not_connected", "pair_required", "sync_failed"}:
             raise SafeError(data["error"], "Direct backend unavailable or account operation stopped; no automatic retry.")
         expected = {"send": "accepted", "sync": "synced", "pair": "linked"}[command]

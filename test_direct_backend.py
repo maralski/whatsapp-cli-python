@@ -246,6 +246,22 @@ print(json.dumps({'tty_valid':os.isatty(request['tty_fd']),'detached':detached})
                 backend.load_protocol(cli)
         self.assertNotIn("neonize", sys.modules)
 
+    def test_connection_reason_returns_only_constants(self):
+        cases = [("websocket refused " + SECRET, "websocket_failed"), ("tls " + SECRET, "tls_failed"), ("no such host " + SECRET, "dns_failed"), (SECRET, "connection_failed")]
+        for message, reason in cases:
+            self.assertEqual(backend.connection_reason(RuntimeError(message)), reason)
+            self.assertNotIn(SECRET, backend.connection_reason(RuntimeError(message)))
+
+    def test_pair_error_never_echoes_unrecognized_backend_reason(self):
+        read_fd, write_fd = os.pipe()
+        self.addCleanup(os.close, read_fd)
+        response = json.dumps({"error": "connect_failed", "reason": SECRET, "qr_shown": False}).encode()
+        with mock.patch.object(cli.os, "open", return_value=write_fd), mock.patch.object(cli.os, "isatty", return_value=True), mock.patch.object(cli.os, "fstat", return_value=types.SimpleNamespace(st_mode=stat.S_IFCHR)), mock.patch.object(cli, "run_bounded", return_value=(0, response)):
+            with self.assertRaises(cli.SafeError) as error:
+                cli.backend_operation("pair", self.store)
+        self.assertEqual(error.exception.code, "connect_failed")
+        self.assertNotIn(SECRET, str(error.exception))
+
     def test_dependency_drift_fails_closed(self):
         with mock.patch.object(backend.importlib.metadata, "version", return_value="unexpected"):
             with self.assertRaises(RuntimeError):
@@ -344,6 +360,34 @@ class LifecycleTests(unittest.TestCase):
         values = {"command": "send", "store": str(self.store), "identity": IDENTITY, "jid": JID, "text": "literal @12025550123 https://example.com", "seconds": 1, "limit": 200, "allow_self": False}
         values.update(changes)
         return values
+
+    def test_pair_native_connection_failure_has_redacted_category(self):
+        protocol, sent = self.protocol()
+        def failed_connect():
+            raise RuntimeError("websocket failed at " + SECRET)
+        protocol.NewClient.return_value.connect = failed_connect
+        with mock.patch.object(backend, "verified_pair_terminal", return_value=3):
+            response = backend.operate(self.request(command="pair", identity=None, tty_fd=3), cli, protocol)
+        self.assertEqual(response, {"error": "connect_failed", "reason": "websocket_failed", "qr_shown": False})
+        self.assertNotIn(SECRET, json.dumps(response))
+        self.assertEqual(sent, [])
+
+    def test_pair_qr_render_failure_is_distinct(self):
+        protocol, sent = self.protocol(qr=True)
+        with mock.patch.object(backend, "verified_pair_terminal", return_value=3), mock.patch.object(backend, "render_pair_qr", side_effect=OSError(SECRET)):
+            response = backend.operate(self.request(command="pair", identity=None, tty_fd=3), cli, protocol)
+        self.assertEqual(response, {"error": "qr_render_failed", "reason": None, "qr_shown": False})
+        self.assertEqual(sent, [])
+
+    def test_pair_timeout_is_distinct(self):
+        protocol, sent = self.protocol()
+        wait = threading.Event()
+        protocol.NewClient.return_value.connect = lambda: wait.wait(3)
+        protocol.NewClient.return_value.stop = wait.set
+        with mock.patch.object(backend, "verified_pair_terminal", return_value=3), mock.patch.object(backend.time, "monotonic", side_effect=[0, 121]):
+            response = backend.operate(self.request(command="pair", identity=None, tty_fd=3), cli, protocol)
+        self.assertEqual(response, {"error": "pair_timeout", "reason": None, "qr_shown": False})
+        self.assertEqual(sent, [])
 
     def test_selected_session_and_literal_protobuf_send(self):
         self.linked()

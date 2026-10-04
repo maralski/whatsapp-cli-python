@@ -186,6 +186,23 @@ def render_pair_qr(request, data):
         segno.make_qr(data).terminal(out=terminal, compact=True)
 
 
+def connection_reason(error):
+    # Match internally; return constants only, never exception text/addresses.
+    message = str(error).lower()
+    for reason, markers in (
+        ("dns_failed", ("no such host", "name resolution")),
+        ("tls_failed", ("tls", "x509", "certificate")),
+        ("connection_timeout", ("timeout", "timed out")),
+        ("connection_refused", ("connection refused",)),
+        ("websocket_failed", ("websocket", "unexpected http", "status code")),
+        ("database_failed", ("database is locked", "unable to open database", "readonly database")),
+        ("connection_closed", ("eof", "connection reset",)),
+    ):
+        if any(marker in message for marker in markers):
+            return reason
+    return "connection_failed"
+
+
 def operate(request, cli, protocol):
     command = request["command"]
     if command == "pair":
@@ -201,8 +218,12 @@ def operate(request, cli, protocol):
         client_jid = protocol.JID(User=user, Device=int(device), Server=server, IsEmpty=False, RawAgent=0, Integrator=0)
     client = protocol.NewClient(str(store / "session.db"), jid=client_jid)
     connected, finished, unsafe_auth = threading.Event(), threading.Event(), threading.Event()
+    pairing = {"qr_shown": False, "failure": None, "reason": None}
     client.event(protocol.ConnectedEv)(lambda client, event: connected.set())
-    client.event(protocol.LoggedOutEv)(lambda client, event: unsafe_auth.set())
+    def logged_out(client, event):
+        pairing["failure"] = "pair_rejected"
+        unsafe_auth.set()
+    client.event(protocol.LoggedOutEv)(logged_out)
 
     def qr(client, data):
         if command != "pair":
@@ -210,7 +231,9 @@ def operate(request, cli, protocol):
             return
         try:
             render_pair_qr(request, data)
+            pairing["qr_shown"] = True
         except Exception:
+            pairing["failure"] = "qr_render_failed"
             unsafe_auth.set()
     client.event.qr(qr)
     index = TextIndex(store, request["jid"], request["limit"]) if command in ("send", "sync") else None
@@ -221,7 +244,10 @@ def operate(request, cli, protocol):
     def connect():
         try:
             client.connect()
-        except Exception:
+        except Exception as error:
+            if pairing["failure"] is None:
+                pairing["failure"] = "connect_failed"
+                pairing["reason"] = connection_reason(error)
             unsafe_auth.set()
         finally:
             finished.set()
@@ -231,8 +257,13 @@ def operate(request, cli, protocol):
     try:
         while not connected.wait(0.1):
             if unsafe_auth.is_set() or finished.is_set() or time.monotonic() >= deadline:
+                if command == "pair":
+                    error = pairing["failure"] or ("connection_ended" if finished.is_set() else "pair_timeout")
+                    return {"error": error, "reason": pairing["reason"], "qr_shown": pairing["qr_shown"]}
                 return {"error": "not_connected"}
         if unsafe_auth.is_set():
+            if command == "pair":
+                return {"error": pairing["failure"] or "pair_rejected", "reason": pairing["reason"], "qr_shown": pairing["qr_shown"]}
             return {"error": "pair_required"}
         if command == "pair":
             if cli.session_identity(store) is None:

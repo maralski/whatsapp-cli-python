@@ -1,4 +1,4 @@
-# Pre-publication security review — 0.2.1
+# Pre-publication security review — 0.2.2
 
 Reviewed 4 October 2026. Maintainer review plus automated checks; not an
 independent audit or certification.
@@ -10,14 +10,17 @@ synthetic tests, native smoke check, documentation, licensing, ignore rules and
 CI workflow were reviewed before publication. No native binaries, account stores,
 QR artifacts, real recipient data, or private outputs are published.
 
-**60 offline tests pass** on this Mac with Python 3.11.6. An additional **9
+**65 offline tests pass** on this Mac with Python 3.11.6. An additional **9
 synthetic booking-adapter tests** verify preservation of the existing durable
 ledger, accepted/pending entries, concurrent dispatch, recipient guards, and
 notice confirmation. The adapter is staged separately and is not activated by
 this release. The native smoke check passes on macOS arm64: real protobuf live
 and history events, exact-chat indexing, revocation, native import and disabled
 runtime download. It never connects or instantiates an account client. No live
-pairing or send was performed for this release. CI exercises Linux/macOS and
+pairing or send was performed for this release. Manual unauthenticated connection
+probes reached the QR stage in fresh temporary stores and the explicitly selected,
+still-unlinked store. QR data was discarded or rendered to /dev/null; no QR was
+displayed, device linked, session keys queried, or message sent. CI exercises Linux/macOS and
 Python 3.11/3.12/3.14; local native validation covers macOS arm64 only.
 
 Native CI exposed an upstream Python 3.10 import of typing.Self despite its
@@ -88,6 +91,18 @@ rejection of stdio/non-TTY/wrong-command descriptors, and synthetic QR rendering
 through a real pseudo-terminal from a detached subprocess. The real PTY test
 proves the QR marker reaches only the terminal while captured result output is
 separate; it loads no WhatsApp account/client and performs no network operation.
+
+## Pairing diagnostics in 0.2.2
+
+The generic not_connected result previously combined native connection errors,
+QR renderer errors, ended sessions and pairing deadlines. The worker now reports
+those pairing phases separately. Native exception strings are matched only in
+memory and mapped to fixed allowlisted categories. Neither raw errors, endpoint
+addresses nor QR/account data are emitted. The parent accepts only fixed error
+codes/categories. Five regression tests cover safe classification, malicious
+backend reason redaction, native connection failure, QR-render failure and the
+pairing deadline. Send behavior and its uncertain-outcome/no-retry policy remain
+unchanged. Pairing is never automatically repeated after a failure.
 
 ## Automated security checks
 

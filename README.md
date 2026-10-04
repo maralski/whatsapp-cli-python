@@ -4,7 +4,7 @@ A small Python CLI for private account linking, bounded local history, and guard
 WhatsApp text sends. Inspired by
 [messages-cli-python](https://github.com/maralski/messages-cli-python).
 
-**Version 0.2.1 has no wacli dependency.** It connects directly through
+**Version 0.2.2 has no wacli dependency.** It connects directly through
 [Neonize 0.5.2](https://github.com/krypton-byte/neonize/releases/tag/0.5.2), a Python
 binding to the native Whatsmeow protocol library. It works in the background;
 WhatsApp Desktop and browser automation are unnecessary. Python **3.11+**, macOS
@@ -59,7 +59,11 @@ Choose a direct absolute path under a trusted existing parent directory:
 .venv/bin/python whatsapp_cli.py status --store /absolute/path/to/cli-store --execute
 ```
 
-Pairing is explicit and requires a controlling terminal. QR credentials are
+Pairing is explicit and requires a controlling terminal. Pairing failures now
+distinguish `connect_failed`, `qr_render_failed`, `pair_timeout`,
+`connection_ended`, and `pair_rejected`. Connection categories expose only fixed
+labels such as DNS, TLS, websocket, timeout, or database failure; raw errors and
+addresses stay private. Check local status before a deliberate repeat. QR credentials are
 written only to a verified terminal descriptor opened from `/dev/tty` by the
 parent, explicitly inherited by the isolated worker; never stdout/stderr/result logs. Ordinary commands
 require one existing session, select that exact device, and refuse unexpected QR
