@@ -1,4 +1,4 @@
-# Pre-publication security review — 0.2.0
+# Pre-publication security review — 0.2.1
 
 Reviewed 4 October 2026. Maintainer review plus automated checks; not an
 independent audit or certification.
@@ -10,7 +10,7 @@ synthetic tests, native smoke check, documentation, licensing, ignore rules and
 CI workflow were reviewed before publication. No native binaries, account stores,
 QR artifacts, real recipient data, or private outputs are published.
 
-**56 offline tests pass** on this Mac with Python 3.11.6. An additional **9
+**60 offline tests pass** on this Mac with Python 3.11.6. An additional **9
 synthetic booking-adapter tests** verify preservation of the existing durable
 ledger, accepted/pending entries, concurrent dispatch, recipient guards, and
 notice confirmation. The adapter is staged separately and is not activated by
@@ -57,7 +57,7 @@ Python/native dependencies are outside the CLI's isolation guarantees.
 | Transport | No dependency on, invocation of, or fallback to wacli. Direct pinned Neonize/Whatsmeow binding; no Desktop or browser control. |
 | Execution intent | All commands dry-run by default. Tests forbid filesystem and worker activity in previews. `--execute` is required even for local initialization/status. |
 | Pairing/account scope | Separate TTY-only pair operation, new owned-format store, no automatic migration or credential copy. One stored device selected explicitly. Multiple identities, unexpected QR, changed account, and extra pairing refused. Status returns booleans, not addresses. |
-| QR credentials | Only `/dev/tty`; never logs or JSON pipes. No phone-code login or captured QR files. Revocation remains an intentional WhatsApp UI action. |
+| QR credentials | Parent opens `/dev/tty` write-only, validates a character TTY, and forwards only that descriptor through pass_fds to the isolated worker. Worker revalidates it and writes QR output there, never logs or JSON pipes. No phone-code login or captured QR files. Revocation remains an intentional WhatsApp UI action. |
 | Dependency integrity | All 20 Python packages pinned and hash-locked for installation; versions checked at runtime. Native library ownership/type/links/size/digest/metadata checked before C loading. Unsupported platforms fail closed. |
 | Automatic downloader | **Fixed during review:** upstream can fetch a native binary on absence/version mismatch. A disabled `neonize.download` shim is inserted BEFORE eager package import; missing/corrupt native code fails before import. A platform shim also avoids the upstream Linux `uname` shell command. Tests/smoke verify disabled downloads. |
 | Media surface | Text-only API; libmagic shim raises on media operations. No FFmpeg installation, media download/upload, preview generation or URL fetching in the called text path. Broad unused upstream dependencies remain pinned because the client imports them. |
@@ -72,6 +72,22 @@ Python/native dependencies are outside the CLI's isolation guarantees.
 | Acceptance and retry | Protocol acceptance is not delivery. One send invocation, no CLI retry or fallback. Self-send opt-in checked both parent and worker. Unknown post-dispatch results stay unknown; cache failure after acceptance is a boolean warning. Upstream reconnect/retry behavior remains. |
 | Booking continuity | Staged replacement uses same ledger schema/path and pending-before-send transaction. Existing accepted and uncertain rows remain protected. Working installed transport is preserved until intentional native pairing and activation. |
 | Publication/CI | Explicit source allowlist; no databases/native artifacts/private output. Immutable official actions, read-only contents, no persisted checkout credentials or account secrets, synthetic tests and offline native smoke. Dependency installation is locked and wheels-only. |
+
+## Pairing terminal fix in 0.2.1
+
+A user-reported terminal_required error exposed a missed boundary in 0.2.0:
+opening a terminal in Python text mode r+ requires a seekable stream and fails on
+a real TTY. The new-session worker also cannot reopen /dev/tty. The parent now
+opens a write-only terminal descriptor, checks it, forwards only that descriptor,
+and closes it after success or failure. The worker validates the descriptor
+before loading the protocol, then duplicates it only for QR rendering. Send/sync
+inherit no such descriptor; isolation and process-group cleanup remain intact.
+
+Four regression tests cover explicit forwarding, cleanup on launch failure,
+rejection of stdio/non-TTY/wrong-command descriptors, and synthetic QR rendering
+through a real pseudo-terminal from a detached subprocess. The real PTY test
+proves the QR marker reaches only the terminal while captured result output is
+separate; it loads no WhatsApp account/client and performs no network operation.
 
 ## Automated security checks
 

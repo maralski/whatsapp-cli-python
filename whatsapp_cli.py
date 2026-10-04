@@ -17,7 +17,7 @@ import sys
 import time
 from urllib.parse import quote
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 MAX_TEXT = 10000
 MAX_INPUT_BYTES = 40000
 MAX_ROWS = 200
@@ -279,7 +279,7 @@ def initialize_store(value):
         os.umask(old_umask)
 
 
-def run_bounded(argv, timeout, request=None):
+def run_bounded(argv, timeout, request=None, *, pass_fds=()):
     """One POSIX child; bound captured output and redact all backend errors."""
     # Do not pass ambient proxies, loader hooks, account overrides, or secrets.
     environment = {"PATH": "/usr/bin:/bin", "LANG": "C", "HOME": str(Path.home())}
@@ -288,7 +288,7 @@ def run_bounded(argv, timeout, request=None):
         process = subprocess.Popen(
             argv, stdin=subprocess.PIPE if request is not None else subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, env=environment, shell=False,
-            close_fds=True, start_new_session=True, umask=0o077,
+            close_fds=True, pass_fds=pass_fds, start_new_session=True, umask=0o077,
         )
         captured = {"stdout": bytearray(), "stderr": bytearray()}
         deadline = time.monotonic() + timeout
@@ -350,13 +350,6 @@ def backend_operation(command, store, *, jid=None, text=None, allow_self=False, 
     if command == "pair":
         if identity:
             raise SafeError("already_linked", "Store already linked; pairing a second account is forbidden.")
-        # QR credentials must never enter logs or pipes. The worker opens /dev/tty.
-        try:
-            with open("/dev/tty", "r+") as terminal:
-                if not terminal.isatty():
-                    raise OSError()
-        except OSError:
-            raise SafeError("terminal_required", "Run pair yourself in an interactive terminal to scan the QR code.") from None
     elif not identity:
         raise SafeError("not_linked", "Run pair explicitly in an interactive terminal first; ordinary commands never pair.")
     if jid is not None:
@@ -369,9 +362,25 @@ def backend_operation(command, store, *, jid=None, text=None, allow_self=False, 
                "jid": jid, "text": text, "seconds": seconds, "limit": limit, "allow_self": allow_self}
     worker = Path(__file__).absolute().with_name("whatsapp_backend.py")
     checked_path(worker)
-    code, raw = run_bounded([sys.executable, "-I", "-B", str(worker)],
-                            150 if command == "pair" else seconds + 25 if command == "sync" else SEND_TIMEOUT,
-                            json.dumps(request, ensure_ascii=True).encode())
+    terminal_fd = None
+    try:
+        if command == "pair":
+            # Opening text mode r+ would require a seekable file. Preserve only
+            # a verified writable TTY descriptor across the isolated worker session.
+            try:
+                terminal_fd = os.open("/dev/tty", os.O_WRONLY | os.O_NOCTTY)
+                if not os.isatty(terminal_fd) or not stat.S_ISCHR(os.fstat(terminal_fd).st_mode):
+                    raise OSError()
+            except OSError:
+                raise SafeError("terminal_required", "Run pair yourself in an interactive terminal to scan the QR code.") from None
+            request["tty_fd"] = terminal_fd
+        arguments = ([sys.executable, "-I", "-B", str(worker)],
+                     150 if command == "pair" else seconds + 25 if command == "sync" else SEND_TIMEOUT,
+                     json.dumps(request, ensure_ascii=True).encode())
+        code, raw = run_bounded(*arguments, pass_fds=(terminal_fd,)) if terminal_fd is not None else run_bounded(*arguments)
+    finally:
+        if terminal_fd is not None:
+            os.close(terminal_fd)
     try:
         data = json.loads(raw)
         if code != 0 or not isinstance(data, dict):

@@ -10,6 +10,7 @@ from pathlib import Path
 import platform
 import re
 import sqlite3
+import stat
 import sys
 import threading
 import time
@@ -167,8 +168,28 @@ class TextIndex:
                 self.payload(msg.key.ID, msg.messageTimestamp, msg.key.fromMe, msg.message)
 
 
+def verified_pair_terminal(request):
+    descriptor = request.get("tty_fd")
+    if request.get("command") != "pair" or type(descriptor) is not int or descriptor <= 2:
+        raise ValueError("Explicit inherited pairing terminal required")
+    if not os.isatty(descriptor) or not stat.S_ISCHR(os.fstat(descriptor).st_mode):
+        raise ValueError("Pairing descriptor is not a terminal")
+    return descriptor
+
+
+def render_pair_qr(request, data):
+    import segno
+    descriptor = verified_pair_terminal(request)
+    # The worker has its own session: /dev/tty cannot be reopened here. The
+    # descriptor is inherited explicitly; duplicating it keeps ownership clear.
+    with os.fdopen(os.dup(descriptor), "w", encoding="utf-8") as terminal:
+        segno.make_qr(data).terminal(out=terminal, compact=True)
+
+
 def operate(request, cli, protocol):
     command = request["command"]
+    if command == "pair":
+        verified_pair_terminal(request)
     store = cli.verify_store(request["store"])
     identity = cli.session_identity(store)
     if identity != request["identity"] or (command == "pair") != (identity is None):
@@ -187,12 +208,8 @@ def operate(request, cli, protocol):
         if command != "pair":
             unsafe_auth.set()
             return
-        import segno
         try:
-            with open("/dev/tty", "w") as terminal:
-                if not terminal.isatty():
-                    raise OSError()
-                segno.make_qr(data).terminal(out=terminal, compact=True)
+            render_pair_qr(request, data)
         except Exception:
             unsafe_auth.set()
     client.event.qr(qr)
@@ -264,6 +281,8 @@ def main():
         request = json.loads(raw)
         if request["command"] not in ("send", "pair", "sync") or not 1 <= request["seconds"] <= 120 or not 1 <= request["limit"] <= 200:
             raise ValueError()
+        if request["command"] == "pair":
+            verified_pair_terminal(request)
         cli = local_cli()
         store = cli.verify_store(request["store"])
         fd = os.open(store / ".cli.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)

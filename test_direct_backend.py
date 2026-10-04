@@ -2,6 +2,8 @@
 from contextlib import closing
 import io
 import json
+import os
+import stat
 from pathlib import Path
 import sqlite3
 import sys
@@ -137,7 +139,7 @@ class DirectTests(unittest.TestCase):
                 run.assert_called_once()
 
     def test_pair_requires_tty_and_never_adds_account(self):
-        with mock.patch("builtins.open", side_effect=OSError), mock.patch.object(cli, "run_bounded") as run:
+        with mock.patch.object(cli.os, "open", side_effect=OSError), mock.patch.object(cli, "run_bounded") as run:
             with self.assertRaises(cli.SafeError) as error:
                 cli.backend_operation("pair", self.store)
             self.assertEqual(error.exception.code, "terminal_required")
@@ -146,6 +148,62 @@ class DirectTests(unittest.TestCase):
         with self.assertRaises(cli.SafeError) as error:
             cli.backend_operation("pair", self.store)
         self.assertEqual(error.exception.code, "already_linked")
+
+    def test_pair_forwards_only_verified_tty_and_closes_descriptor(self):
+        read_fd, write_fd = os.pipe()
+        self.addCleanup(os.close, read_fd)
+        with mock.patch.object(cli.os, "open", return_value=write_fd), mock.patch.object(cli.os, "isatty", return_value=True), mock.patch.object(cli.os, "fstat", return_value=types.SimpleNamespace(st_mode=stat.S_IFCHR)), mock.patch.object(cli, "run_bounded", return_value=(0, b'{"status":"linked"}')) as run:
+            self.assertEqual(cli.backend_operation("pair", self.store), {"status": "linked"})
+        self.assertEqual(run.call_args.kwargs["pass_fds"], (write_fd,))
+        self.assertEqual(json.loads(run.call_args.args[2])["tty_fd"], write_fd)
+        with self.assertRaises(OSError):
+            os.fstat(write_fd)
+
+    def test_pair_terminal_closed_on_launch_failure(self):
+        read_fd, write_fd = os.pipe()
+        self.addCleanup(os.close, read_fd)
+        with mock.patch.object(cli.os, "open", return_value=write_fd), mock.patch.object(cli.os, "isatty", return_value=True), mock.patch.object(cli.os, "fstat", return_value=types.SimpleNamespace(st_mode=stat.S_IFCHR)), mock.patch.object(cli, "run_bounded", side_effect=cli.SafeError("send_not_started", "No worker started")):
+            with self.assertRaises(cli.SafeError):
+                cli.backend_operation("pair", self.store)
+        with self.assertRaises(OSError):
+            os.fstat(write_fd)
+
+    def test_worker_rejects_stdio_pipe_or_send_as_pairing_terminal(self):
+        read_fd, write_fd = os.pipe()
+        self.addCleanup(os.close, read_fd)
+        self.addCleanup(os.close, write_fd)
+        for request in ({"command": "pair", "tty_fd": 1}, {"command": "pair", "tty_fd": True}, {"command": "pair", "tty_fd": write_fd}, {"command": "send", "tty_fd": write_fd}):
+            with self.assertRaises(ValueError):
+                backend.verified_pair_terminal(request)
+
+    def test_detached_worker_can_render_only_to_inherited_terminal(self):
+        master, slave = os.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        worker_path = str(Path(backend.__file__).absolute())
+        source = """import importlib.util,json,os,sys,types
+request=json.loads(sys.stdin.buffer.read())
+spec=importlib.util.spec_from_file_location('synthetic_worker',request['worker'])
+worker=importlib.util.module_from_spec(spec);spec.loader.exec_module(worker)
+# Only synthetic text enters this PTY; no protocol library or account is loaded.
+class FakeQR:
+ def terminal(self,out,compact):
+  out.write('SYNTHETIC_QR_MARKER');out.flush()
+sys.modules['segno']=types.SimpleNamespace(make_qr=lambda data: FakeQR())
+worker.render_pair_qr(request,b'synthetic-not-a-credential')
+try:
+ fd=os.open('/dev/tty',os.O_WRONLY);os.close(fd);detached=False
+except OSError:
+ detached=True
+print(json.dumps({'tty_valid':os.isatty(request['tty_fd']),'detached':detached}))
+"""
+        request = {"command": "pair", "tty_fd": slave, "worker": worker_path}
+        code, raw = cli.run_bounded([sys.executable, "-I", "-B", "-c", source], 5, json.dumps(request).encode(), pass_fds=(slave,))
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(raw), {"tty_valid": True, "detached": True})
+        self.assertNotIn(b"SYNTHETIC_QR_MARKER", raw)
+        os.set_blocking(master, False)
+        self.assertEqual(os.read(master, 4096), b"SYNTHETIC_QR_MARKER")
 
     def test_all_dry_runs_do_not_inspect_or_launch(self):
         with mock.patch.object(cli, "checked_path", side_effect=AssertionError), mock.patch.object(cli, "run_bounded", side_effect=AssertionError):
@@ -209,7 +267,7 @@ class DirectTests(unittest.TestCase):
         with open(lock_path, "w") as lock:
             lock_path.chmod(0o600)
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            request = {"command": "pair", "store": str(self.store), "identity": None, "seconds": 30, "limit": 200}
+            request = {"command": "sync", "store": str(self.store), "identity": None, "seconds": 30, "limit": 200}
             code, raw = cli.run_bounded([sys.executable, "-I", "-B", str(Path(backend.__file__).absolute())], 5, json.dumps(request).encode())
         self.assertEqual(json.loads(raw), {"error": "backend_busy"})
 
