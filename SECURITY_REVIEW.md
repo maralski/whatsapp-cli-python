@@ -1,4 +1,4 @@
-# Pre-publication security review — 0.2.2
+# Pre-publication security review — 0.2.3
 
 Reviewed 4 October 2026. Maintainer review plus automated checks; not an
 independent audit or certification.
@@ -10,7 +10,7 @@ synthetic tests, native smoke check, documentation, licensing, ignore rules and
 CI workflow were reviewed before publication. No native binaries, account stores,
 QR artifacts, real recipient data, or private outputs are published.
 
-**65 offline tests pass** on this Mac with Python 3.11.6. An additional **9
+**67 offline tests pass** on this Mac with Python 3.11.6. An additional **9
 synthetic booking-adapter tests** verify preservation of the existing durable
 ledger, accepted/pending entries, concurrent dispatch, recipient guards, and
 notice confirmation. The adapter is staged separately and is not activated by
@@ -60,7 +60,7 @@ Python/native dependencies are outside the CLI's isolation guarantees.
 | Transport | No dependency on, invocation of, or fallback to wacli. Direct pinned Neonize/Whatsmeow binding; no Desktop or browser control. |
 | Execution intent | All commands dry-run by default. Tests forbid filesystem and worker activity in previews. `--execute` is required even for local initialization/status. |
 | Pairing/account scope | Separate TTY-only pair operation, new owned-format store, no automatic migration or credential copy. One stored device selected explicitly. Multiple identities, unexpected QR, changed account, and extra pairing refused. Status returns booleans, not addresses. |
-| QR credentials | Parent opens `/dev/tty` write-only, validates a character TTY, and forwards only that descriptor through pass_fds to the isolated worker. Worker revalidates it and writes QR output there, never logs or JSON pipes. No phone-code login or captured QR files. Revocation remains an intentional WhatsApp UI action. |
+| QR credentials | Parent validates the controlling TTY and resolves its concrete device from attached terminal streams with the same foreground process group. It duplicates a writable handle, or opens the concrete device without following symlinks, validates type/device/foreground group, and forwards only that descriptor through pass_fds. Worker revalidates it and writes QR output there, never logs or JSON pipes. No terminal flags or signal handlers/masks changed. No phone-code login or captured QR files. Revocation remains an intentional WhatsApp UI action. |
 | Dependency integrity | All 20 Python packages pinned and hash-locked for installation; versions checked at runtime. Native library ownership/type/links/size/digest/metadata checked before C loading. Unsupported platforms fail closed. |
 | Automatic downloader | **Fixed during review:** upstream can fetch a native binary on absence/version mismatch. A disabled `neonize.download` shim is inserted BEFORE eager package import; missing/corrupt native code fails before import. A platform shim also avoids the upstream Linux `uname` shell command. Tests/smoke verify disabled downloads. |
 | Media surface | Text-only API; libmagic shim raises on media operations. No FFmpeg installation, media download/upload, preview generation or URL fetching in the called text path. Broad unused upstream dependencies remain pinned because the client imports them. |
@@ -103,6 +103,23 @@ codes/categories. Five regression tests cover safe classification, malicious
 backend reason redaction, native connection failure, QR-render failure and the
 pairing deadline. Send behavior and its uncertain-outcome/no-retry policy remain
 unchanged. Pairing is never automatically repeated after a failure.
+
+## Concrete terminal fix in 0.2.3
+
+The user's qr_render_failed report exposed another macOS boundary: an inherited
+descriptor opened through the session-relative /dev/tty alias remains isatty(),
+but writes fail with EIO after start_new_session. The parent now forwards a handle
+to the actual terminal device after checking the controlling terminal's foreground
+group and the selected character device. The detached worker and bounded cleanup
+are preserved; no terminal settings or signal handlers/masks are changed.
+
+Two regressions create a real controlling pseudo-terminal, enable TOSTOP only in
+that private test terminal, reproduce the alias failure on macOS, and verify the
+concrete handle works in the isolated worker. They exercise both a synthetic
+writer and the installed Segno QR renderer with synthetic pairing data. Terminal
+flags, signal state and result-pipe separation are checked; QR bytes are discarded.
+These checks load no account client and do not connect. CI repeats the real
+renderer check after installing the locked dependencies on all four runners.
 
 ## Automated security checks
 

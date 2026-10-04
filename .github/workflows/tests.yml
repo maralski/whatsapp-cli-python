@@ -33,4 +33,5 @@ jobs:
       - run: python -W error::ResourceWarning -m unittest -v
       - run: python -m venv .venv
       - run: '.venv/bin/python -m pip install --require-hashes --only-binary=:all: -r requirements.lock'
+      - run: .venv/bin/python -W error::ResourceWarning -m unittest -v test_terminal_job_control
       - run: .venv/bin/python -I -B verify_protocol.py

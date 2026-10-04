@@ -3,7 +3,6 @@ from contextlib import closing
 import io
 import json
 import os
-import stat
 from pathlib import Path
 import sqlite3
 import sys
@@ -152,7 +151,7 @@ class DirectTests(unittest.TestCase):
     def test_pair_forwards_only_verified_tty_and_closes_descriptor(self):
         read_fd, write_fd = os.pipe()
         self.addCleanup(os.close, read_fd)
-        with mock.patch.object(cli.os, "open", return_value=write_fd), mock.patch.object(cli.os, "isatty", return_value=True), mock.patch.object(cli.os, "fstat", return_value=types.SimpleNamespace(st_mode=stat.S_IFCHR)), mock.patch.object(cli, "run_bounded", return_value=(0, b'{"status":"linked"}')) as run:
+        with mock.patch.object(cli, "open_pair_terminal", return_value=write_fd), mock.patch.object(cli, "run_bounded", return_value=(0, b'{"status":"linked"}')) as run:
             self.assertEqual(cli.backend_operation("pair", self.store), {"status": "linked"})
         self.assertEqual(run.call_args.kwargs["pass_fds"], (write_fd,))
         self.assertEqual(json.loads(run.call_args.args[2])["tty_fd"], write_fd)
@@ -162,7 +161,7 @@ class DirectTests(unittest.TestCase):
     def test_pair_terminal_closed_on_launch_failure(self):
         read_fd, write_fd = os.pipe()
         self.addCleanup(os.close, read_fd)
-        with mock.patch.object(cli.os, "open", return_value=write_fd), mock.patch.object(cli.os, "isatty", return_value=True), mock.patch.object(cli.os, "fstat", return_value=types.SimpleNamespace(st_mode=stat.S_IFCHR)), mock.patch.object(cli, "run_bounded", side_effect=cli.SafeError("send_not_started", "No worker started")):
+        with mock.patch.object(cli, "open_pair_terminal", return_value=write_fd), mock.patch.object(cli, "run_bounded", side_effect=cli.SafeError("send_not_started", "No worker started")):
             with self.assertRaises(cli.SafeError):
                 cli.backend_operation("pair", self.store)
         with self.assertRaises(OSError):
@@ -256,7 +255,7 @@ print(json.dumps({'tty_valid':os.isatty(request['tty_fd']),'detached':detached})
         read_fd, write_fd = os.pipe()
         self.addCleanup(os.close, read_fd)
         response = json.dumps({"error": "connect_failed", "reason": SECRET, "qr_shown": False}).encode()
-        with mock.patch.object(cli.os, "open", return_value=write_fd), mock.patch.object(cli.os, "isatty", return_value=True), mock.patch.object(cli.os, "fstat", return_value=types.SimpleNamespace(st_mode=stat.S_IFCHR)), mock.patch.object(cli, "run_bounded", return_value=(0, response)):
+        with mock.patch.object(cli, "open_pair_terminal", return_value=write_fd), mock.patch.object(cli, "run_bounded", return_value=(0, response)):
             with self.assertRaises(cli.SafeError) as error:
                 cli.backend_operation("pair", self.store)
         self.assertEqual(error.exception.code, "connect_failed")

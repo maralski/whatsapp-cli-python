@@ -4,6 +4,7 @@
 import argparse
 from contextlib import closing
 import datetime as dt
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,7 @@ import sys
 import time
 from urllib.parse import quote
 
-VERSION = "0.2.2"
+VERSION = "0.2.3"
 MAX_TEXT = 10000
 MAX_INPUT_BYTES = 40000
 MAX_ROWS = 200
@@ -344,6 +345,53 @@ def run_bounded(argv, timeout, request=None, *, pass_fds=()):
             process.stderr.close()
 
 
+def open_pair_terminal():
+    """Resolve the controlling TTY to a concrete device before isolating child.
+
+    macOS /dev/tty is a session-relative alias: inheriting its descriptor into
+    a new session can leave it isatty() but unwritable (EIO). Standard terminal
+    descriptors identify the real device; require the same foreground group.
+    """
+    control = None
+    selected = None
+    try:
+        control = os.open("/dev/tty", os.O_WRONLY | os.O_NOCTTY)
+        if not os.isatty(control):
+            raise OSError()
+        foreground = os.tcgetpgrp(control)
+        for candidate in (1, 2, 0):
+            try:
+                if not os.isatty(candidate) or os.tcgetpgrp(candidate) != foreground:
+                    continue
+                concrete = os.ttyname(candidate)
+                if concrete == "/dev/tty":
+                    continue
+                before = os.fstat(candidate)
+                if not stat.S_ISCHR(before.st_mode):
+                    continue
+                access = fcntl.fcntl(candidate, fcntl.F_GETFL) & os.O_ACCMODE
+                if access in (os.O_WRONLY, os.O_RDWR):
+                    selected = os.dup(candidate)
+                else:
+                    selected = os.open(concrete, os.O_WRONLY | os.O_NOCTTY | os.O_NOFOLLOW)
+                after = os.fstat(selected)
+                if not os.isatty(selected) or not stat.S_ISCHR(after.st_mode) or after.st_rdev != before.st_rdev or os.tcgetpgrp(selected) != foreground:
+                    os.close(selected)
+                    selected = None
+                    continue
+                return selected
+            except OSError:
+                if selected is not None:
+                    os.close(selected)
+                    selected = None
+        raise OSError()
+    except OSError:
+        raise SafeError("terminal_required", "Run pair yourself in an interactive terminal with an attached terminal stream to scan the QR code.") from None
+    finally:
+        if control is not None:
+            os.close(control)
+
+
 def backend_operation(command, store, *, jid=None, text=None, allow_self=False, seconds=30, limit=200):
     selected = verify_store(store)
     identity = session_identity(selected)
@@ -365,14 +413,8 @@ def backend_operation(command, store, *, jid=None, text=None, allow_self=False, 
     terminal_fd = None
     try:
         if command == "pair":
-            # Opening text mode r+ would require a seekable file. Preserve only
-            # a verified writable TTY descriptor across the isolated worker session.
-            try:
-                terminal_fd = os.open("/dev/tty", os.O_WRONLY | os.O_NOCTTY)
-                if not os.isatty(terminal_fd) or not stat.S_ISCHR(os.fstat(terminal_fd).st_mode):
-                    raise OSError()
-            except OSError:
-                raise SafeError("terminal_required", "Run pair yourself in an interactive terminal to scan the QR code.") from None
+            # Forward a concrete terminal handle, not the session-relative alias.
+            terminal_fd = open_pair_terminal()
             request["tty_fd"] = terminal_fd
         arguments = ([sys.executable, "-I", "-B", str(worker)],
                      150 if command == "pair" else seconds + 25 if command == "sync" else SEND_TIMEOUT,
