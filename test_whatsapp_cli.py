@@ -375,6 +375,24 @@ class SendTests(Fixtures):
             self.assertFalse(result["delivery_confirmed"])
             run.assert_called_once_with([str(binary), "--store", str(store), "--json", "--timeout", "40s", "send", "text", "--to", JID, "--message", body, "--no-preview"], 50)
 
+    def test_self_send_opt_in_is_explicit(self):
+        binary, checksum = self.binary()
+        store = self.store()
+        with mock.patch.object(cli, "run_bounded", return_value=(0, self.accepted())) as run:
+            cli.send_text(binary, checksum, store, JID, "synthetic test", allow_self=True)
+            self.assertEqual(run.call_args.args[0][-1], "--allow-self")
+            self.assertIn("--no-preview", run.call_args.args[0])
+        args = ["send", "--to", PHONE, "--store", str(store), "--wacli", str(binary), "--wacli-sha256", checksum, "--allow-self"]
+        with mock.patch.object(cli, "run_bounded") as run:
+            code, out, err = self.call(args)
+            self.assertEqual(code, 0)
+            self.assertTrue(json.loads(out)["allow_self"])
+            run.assert_not_called()
+        with mock.patch.object(cli, "run_bounded", return_value=(0, self.accepted())) as run:
+            code, out, err = self.call(args + ["--execute"])
+            self.assertEqual(code, 0, err)
+            self.assertIn("--allow-self", run.call_args.args[0])
+
     def test_bad_output_is_unknown_never_retried(self):
         binary, checksum = self.binary()
         store = self.store()

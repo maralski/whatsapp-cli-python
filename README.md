@@ -131,7 +131,9 @@ through normal controls. It does not remove locks or sockets.
 
 Only exact phone numbers/JIDs are accepted. Groups, contact names, hidden-user
 LIDs, broadcasts, attachments, mentions, replies, and batches are unsupported.
-The wrapper does not enable self-sends; wacli retains its own self-recipient guard.
+Self-sends remain blocked by default. An intentional test to your own linked
+account can use `--allow-self` together with `--execute`; the backend warns that
+self delivery is not guaranteed. Booking integrations should never add this flag.
 Every send includes **`--no-preview`**, preventing automatic URL-preview fetches
 by the backend's reviewed text-send path.
 

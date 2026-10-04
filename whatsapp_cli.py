@@ -17,7 +17,7 @@ import sys
 import time
 from urllib.parse import quote
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 MAX_TEXT = 10000
 MAX_INPUT_BYTES = 40000
 MAX_ROWS = 200
@@ -315,13 +315,15 @@ def run_bounded(argv, timeout):
             process.stderr.close()
 
 
-def send_text(binary, checksum, store, jid, text):
+def send_text(binary, checksum, store, jid, text, *, allow_self=False):
     jid = phone_jid(jid)
     validate_text(text)
     path = verify_binary(binary, checksum)
     selected_store = verify_store(store)
     argv = [str(path), "--store", str(selected_store), "--json", "--timeout", "40s",
             "send", "text", "--to", jid, "--message", text, "--no-preview"]
+    if allow_self:
+        argv.append("--allow-self")
     code, raw = run_bounded(argv, SEND_TIMEOUT)
     try:
         envelope = json.loads(raw)
@@ -356,6 +358,7 @@ def parser():
     send.add_argument("--wacli", help="Absolute direct path to a trusted wacli 0.20.0 executable")
     send.add_argument("--wacli-sha256", help="Independently verified executable SHA-256 (not archive checksum)")
     send.add_argument("--execute", action="store_true")
+    send.add_argument("--allow-self", action="store_true", help="Explicitly opt into sending to the linked account for an intentional self-test; delivery is not guaranteed")
     return result
 
 
@@ -385,11 +388,11 @@ def main(argv=None, stdin=None, stdout=None, stderr=None):
             local_path(args.store)
             body = input_body(sys.stdin.buffer if stdin is None else stdin)
             if not args.execute:
-                emit({"status": "dry_run", "command": "send", "message_chars": len(body), "no_preview": True}, stdout)
+                emit({"status": "dry_run", "command": "send", "message_chars": len(body), "no_preview": True, "allow_self": args.allow_self}, stdout)
             else:
                 if args.wacli is None:
                     raise SafeError("binary_unverified", "Specify --wacli and its independently verified --wacli-sha256 to execute.")
-                emit(send_text(args.wacli, args.wacli_sha256, args.store, jid, body), stdout)
+                emit(send_text(args.wacli, args.wacli_sha256, args.store, jid, body, allow_self=args.allow_self), stdout)
         return 0
     except SafeError as error:
         emit({"error": error.code, "message": str(error)}, stderr)

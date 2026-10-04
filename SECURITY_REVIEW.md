@@ -1,6 +1,6 @@
-# Pre-publication security review — 0.1.0
+# Pre-publication security review — 0.1.1
 
-Reviewed on 4 October 2026, before initial publication. This is a maintainer
+Reviewed on 4 October 2026, before publication of the reviewed version. This is a maintainer
 review with automated checks, not an independent audit or certification.
 
 ## Scope and evidence
@@ -8,12 +8,11 @@ review with automated checks, not an independent audit or certification.
 - All runtime code in `whatsapp_cli.py`, all synthetic tests, documentation,
   licensing, ignore rules, and the CI workflow were reviewed.
 - Runtime source SHA-256:
-  `ea9b989718eb477ae130e8ea363bef2cbb4d00cfde6232a272ad7b4ef937a4d1`.
+  `28c186d02257353e833b7fba0939d88aebee81d9fe8c7eee3f021b2bd66ec7cf`.
 - Test source SHA-256:
-  `4ffdeabbbeeba7cb40e93125f6f535b73a1f9c5610aaccc0e13e833533ab4d2a`.
-- **41 tests passed** on macOS with Python **3.9.6, 3.11.6, and 3.14**.
-  Tests used only synthetic fixtures and fake/local Python children. This
-  repository's implementation was not used to send a real WhatsApp message.
+  `d62bda3bc3979b55ddfe59e28f9611f503275290e8516ff06f217481805e7474`.
+- **42 tests passed** on macOS with Python **3.9.6, 3.11.6, and 3.14**.
+  Tests used only synthetic fixtures and fake/local Python children. These automated tests did not send a real WhatsApp message.
   Linux CI is configured; local validation was on macOS.
 - Installed wacli reported **0.20.0**. Its version and `send text --help` were
   inspected without accessing any real account. Command flags, JSON envelopes,
@@ -43,7 +42,7 @@ Those principals can already access this user's linked account and messages.
 | Area | Review result and control |
 | --- | --- |
 | Execution intent | Dry-run default for history and sends; `--execute` required. Dry-run tests forbid filesystem/account access and child launch. |
-| Recipient scope | Exact international numbers or phone JIDs only; names, groups, LIDs, broadcasts, and device-qualified JIDs rejected. The imported send function also validates. |
+| Recipient scope | Self-sends remain blocked by default; version 0.1.1 adds explicit `--allow-self` for an intentional self-test, still requiring `--execute`, exact recipient and no previews. Dry-run never sends even with that flag. Exact international numbers or phone JIDs only; names, groups, LIDs, broadcasts, and device-qualified JIDs rejected. The imported send function also validates. |
 | Process/code injection | No shell, eval, dynamically generated code, pass-through flags, or arbitrary backend commands. Bodies are one fixed argv value; shell metacharacters and Unicode tested through a real fake-backend subprocess. |
 | Backend selection | Explicit absolute direct path and caller-provided trusted executable SHA-256. Ownership, permissions, type, hard links, symlinks, size, and metadata checked. Hashing uses an open no-follow descriptor and bounded reads; detected changes fail closed. |
 | Ambient configuration | Explicit store; minimal child environment, no inherited proxy, WACLI account settings, or loader variables. New child files have umask `0077`. |
@@ -114,7 +113,7 @@ detect-secrets scan --all-files --exclude-files '(^|/)(__pycache__|\.git|\.ruff_
 6. **Cached/deleted history.** Output reflects the index at read time, not full
    server history or current device deletion state. WAL reads may create/use
    coordination sidecars; read-only index access is not zero filesystem writes.
-7. **Validation coverage.** No live send, delivery receipt, account pairing,
+7. **Validation coverage.** No live-send or delivery-receipt validation is part of the automated suite. Account pairing,
    attachment transfer, or Windows support was tested or claimed for this
    project. Fake end-to-end tests verify wrapper plumbing and protocol shape,
    not the availability of WhatsApp service.
