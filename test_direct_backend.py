@@ -34,6 +34,12 @@ class DirectTests(unittest.TestCase):
             db.execute("CREATE TABLE whatsmeow_device(jid TEXT)")
             db.executemany("INSERT INTO whatsmeow_device VALUES (?)", [(x,) for x in identities])
 
+    def test_unsupported_python_stops_before_state_access(self):
+        output, error = io.StringIO(), io.StringIO()
+        with mock.patch.object(cli.sys, "version_info", (3, 10)), mock.patch.object(cli, "checked_path", side_effect=AssertionError):
+            self.assertEqual(cli.main(["status", "--store", str(self.store), "--execute"], stdout=output, stderr=error), 1)
+        self.assertEqual(json.loads(error.getvalue())["error"], "unsupported_python")
+
     def test_private_init_no_overwrite(self):
         self.assertEqual(cli.verify_store(self.store), self.store)
         self.assertIsNone(cli.session_identity(self.store))

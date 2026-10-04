@@ -434,6 +434,8 @@ def main(argv=None, stdin=None, stdout=None, stderr=None):
     stderr = sys.stderr if stderr is None else stderr
     try:
         args = parser().parse_args(argv)
+        if sys.version_info < (3, 11):
+            raise SafeError("unsupported_python", "The pinned direct backend requires Python 3.11 or newer.")
         if os.name != "posix":
             raise SafeError("unsupported_platform", "This version supports macOS and Linux only.")
         if args.command == "history":

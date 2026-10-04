@@ -10,7 +10,7 @@ synthetic tests, native smoke check, documentation, licensing, ignore rules and
 CI workflow were reviewed before publication. No native binaries, account stores,
 QR artifacts, real recipient data, or private outputs are published.
 
-**55 offline tests pass** on this Mac with Python 3.11.6. An additional **9
+**56 offline tests pass** on this Mac with Python 3.11.6. An additional **9
 synthetic booking-adapter tests** verify preservation of the existing durable
 ledger, accepted/pending entries, concurrent dispatch, recipient guards, and
 notice confirmation. The adapter is staged separately and is not activated by
@@ -18,7 +18,13 @@ this release. The native smoke check passes on macOS arm64: real protobuf live
 and history events, exact-chat indexing, revocation, native import and disabled
 runtime download. It never connects or instantiates an account client. No live
 pairing or send was performed for this release. CI exercises Linux/macOS and
-Python 3.10/3.11/3.14; local native validation covers macOS arm64 only.
+Python 3.11/3.12/3.14; local native validation covers macOS arm64 only.
+
+Native CI exposed an upstream Python 3.10 import of typing.Self despite its
+metadata claiming 3.10 support. This release therefore requires Python 3.11+;
+the minimum-version guard fails early. CI installs into a dedicated virtual
+environment because shared runner toolchain ancestors fail the same strict
+path checks retained in production.
 
 The direct binding was reviewed at
 [Neonize 0.5.2 revision 840dd69](https://github.com/krypton-byte/neonize/tree/840dd69fe22fe7d5e2156eeeb02574a861db22c2),
@@ -52,7 +58,7 @@ Python/native dependencies are outside the CLI's isolation guarantees.
 | Execution intent | All commands dry-run by default. Tests forbid filesystem and worker activity in previews. `--execute` is required even for local initialization/status. |
 | Pairing/account scope | Separate TTY-only pair operation, new owned-format store, no automatic migration or credential copy. One stored device selected explicitly. Multiple identities, unexpected QR, changed account, and extra pairing refused. Status returns booleans, not addresses. |
 | QR credentials | Only `/dev/tty`; never logs or JSON pipes. No phone-code login or captured QR files. Revocation remains an intentional WhatsApp UI action. |
-| Dependency integrity | All 21 Python packages pinned and hash-locked for installation; versions checked at runtime. Native library ownership/type/links/size/digest/metadata checked before C loading. Unsupported platforms fail closed. |
+| Dependency integrity | All 20 Python packages pinned and hash-locked for installation; versions checked at runtime. Native library ownership/type/links/size/digest/metadata checked before C loading. Unsupported platforms fail closed. |
 | Automatic downloader | **Fixed during review:** upstream can fetch a native binary on absence/version mismatch. A disabled `neonize.download` shim is inserted BEFORE eager package import; missing/corrupt native code fails before import. A platform shim also avoids the upstream Linux `uname` shell command. Tests/smoke verify disabled downloads. |
 | Media surface | Text-only API; libmagic shim raises on media operations. No FFmpeg installation, media download/upload, preview generation or URL fetching in the called text path. Broad unused upstream dependencies remain pinned because the client imports them. |
 | Literal text | Fixed conversation protobuf bypasses upstream string mention parsing and rich link handling; link_preview=False. Text/recipient sent on bounded stdin JSON, never argv, shell, temporary body file, eval or dynamic generated code. |
@@ -74,7 +80,7 @@ Python/native dependencies are outside the CLI's isolation guarantees.
   Python interpreter and owned worker run; body stays on stdin; minimal env and
   output/deadline cleanup are enforced. No suppressions.
 - **Ruff 0.16.10, F/E9:** passed for runtime, tests and native smoke source.
-- **pip-audit 2.10.1:** all 21 locked Python packages checked; **no known
+- **pip-audit 2.10.1:** all 20 locked Python packages checked; **no known
   vulnerabilities found**. This is a database snapshot, not proof of safety; the
   bundled Go/native dependency chain is not covered by pip-audit.
 - **detect-secrets 1.5.0:** publication file scan and manual content review. The

@@ -7,7 +7,7 @@ WhatsApp text sends. Inspired by
 **Version 0.2.0 has no wacli dependency.** It connects directly through
 [Neonize 0.5.2](https://github.com/krypton-byte/neonize/releases/tag/0.5.2), a Python
 binding to the native Whatsmeow protocol library. It works in the background;
-WhatsApp Desktop and browser automation are unnecessary. Python **3.10+**, macOS
+WhatsApp Desktop and browser automation are unnecessary. Python **3.11+**, macOS
 or Linux, arm64 or x86_64 are supported. This is Python code with a native Go
 library dependency, rather than a pure Python implementation of the protocol.
 
