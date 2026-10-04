@@ -52,7 +52,7 @@ Python/native dependencies are outside the CLI's isolation guarantees.
 | Execution intent | All commands dry-run by default. Tests forbid filesystem and worker activity in previews. `--execute` is required even for local initialization/status. |
 | Pairing/account scope | Separate TTY-only pair operation, new owned-format store, no automatic migration or credential copy. One stored device selected explicitly. Multiple identities, unexpected QR, changed account, and extra pairing refused. Status returns booleans, not addresses. |
 | QR credentials | Only `/dev/tty`; never logs or JSON pipes. No phone-code login or captured QR files. Revocation remains an intentional WhatsApp UI action. |
-| Dependency integrity | All 20 Python packages pinned and hash-locked for installation; versions checked at runtime. Native library ownership/type/links/size/digest/metadata checked before C loading. Unsupported platforms fail closed. |
+| Dependency integrity | All 21 Python packages pinned and hash-locked for installation; versions checked at runtime. Native library ownership/type/links/size/digest/metadata checked before C loading. Unsupported platforms fail closed. |
 | Automatic downloader | **Fixed during review:** upstream can fetch a native binary on absence/version mismatch. A disabled `neonize.download` shim is inserted BEFORE eager package import; missing/corrupt native code fails before import. A platform shim also avoids the upstream Linux `uname` shell command. Tests/smoke verify disabled downloads. |
 | Media surface | Text-only API; libmagic shim raises on media operations. No FFmpeg installation, media download/upload, preview generation or URL fetching in the called text path. Broad unused upstream dependencies remain pinned because the client imports them. |
 | Literal text | Fixed conversation protobuf bypasses upstream string mention parsing and rich link handling; link_preview=False. Text/recipient sent on bounded stdin JSON, never argv, shell, temporary body file, eval or dynamic generated code. |
@@ -74,7 +74,7 @@ Python/native dependencies are outside the CLI's isolation guarantees.
   Python interpreter and owned worker run; body stays on stdin; minimal env and
   output/deadline cleanup are enforced. No suppressions.
 - **Ruff 0.16.10, F/E9:** passed for runtime, tests and native smoke source.
-- **pip-audit 2.10.1:** all 20 locked Python packages checked; **no known
+- **pip-audit 2.10.1:** all 21 locked Python packages checked; **no known
   vulnerabilities found**. This is a database snapshot, not proof of safety; the
   bundled Go/native dependency chain is not covered by pip-audit.
 - **detect-secrets 1.5.0:** publication file scan and manual content review. The

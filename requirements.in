@@ -1,2 +1,4 @@
 # Direct protocol binding; installation is explicit, never performed at runtime.
 neonize==0.5.2
+# anyio requires this on Python 3.10; pin it for a complete portable lock.
+exceptiongroup==1.3.1
