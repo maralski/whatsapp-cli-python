@@ -38,6 +38,22 @@ eager import; this CLI never downloads or repairs dependencies at runtime.
 is deliberately disabled. The offline smoke check loads the library and parses
 synthetic events; it does not instantiate or connect an account client.
 
+## Latest-message workflow
+
+Every request for the latest/current messages must run a fresh bounded `sync`
+for the verified selected chat **before** reading the archive. Inspect sync's
+exit status and result, then use `history-page` for the requested recent interval
+and `history-status`. A dry run or local-only page is not a freshness check.
+Serialize account operations and do not repeat a sync already in flight.
+
+A successful sync can receive available queued/live/history events, but it does
+not certify complete recent coverage. If no new selected-chat text appears,
+report current coverage as unverified. When a user knows a newer message exists,
+do not substitute cached older text, declare that no newer message exists, or
+describe the cache as latest. Show exact timestamps and provenance for any text
+actually retrieved. `fetch` and its phone end marker concern earlier messages
+only; version 0.3.0 cannot force-refresh a missing newer interval.
+
 ## Older messages and paginated history
 
 `fetch` requests earlier message batches from your primary phone through the
