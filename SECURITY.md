@@ -1,6 +1,6 @@
 # Security policy
 
-The supported direct-backend version is 0.2.x. Review the limitations and evidence in
+The supported direct-backend version is 0.4.x. Review the limitations and evidence in
 [SECURITY_REVIEW.md](SECURITY_REVIEW.md) before running against a linked account.
 
 For sensitive findings, use GitHub's **Report a vulnerability** option if it is

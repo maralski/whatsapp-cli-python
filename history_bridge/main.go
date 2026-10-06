@@ -63,6 +63,7 @@ type row struct {
 	Truncated bool    `json:"text_truncated"`
 }
 type request struct {
+	Mode     string `json:"mode,omitempty"`
 	Store    string `json:"store"`
 	Identity string `json:"identity"`
 	Chat     string `json:"chat"`
@@ -71,12 +72,13 @@ type request struct {
 	Seconds  int    `json:"seconds"`
 }
 type response struct {
-	Status           string `json:"status,omitempty"`
-	Error            string `json:"error,omitempty"`
-	Rows             []row  `json:"rows,omitempty"`
-	PhoneEnd         bool   `json:"phone_reported_end"`
-	MoreInaccessible bool   `json:"phone_reports_inaccessible"`
-	Truncated        bool   `json:"response_truncated"`
+	Status           string         `json:"status,omitempty"`
+	Error            string         `json:"error,omitempty"`
+	Rows             []row          `json:"rows,omitempty"`
+	PhoneEnd         bool           `json:"phone_reported_end"`
+	MoreInaccessible bool           `json:"phone_reports_inaccessible"`
+	Truncated        bool           `json:"response_truncated"`
+	Refresh          *refreshReport `json:"refresh,omitempty"`
 }
 
 func private(path string, directory bool) bool {
@@ -94,10 +96,14 @@ func private(path string, directory bool) bool {
 	return info.Mode().IsRegular() && st.Nlink == 1
 }
 func valid(r request) bool {
-	return filepath.IsAbs(r.Store) && filepath.Clean(r.Store) == r.Store &&
+	base := filepath.IsAbs(r.Store) && filepath.Clean(r.Store) == r.Store &&
 		!strings.ContainsAny(r.Store, "?#\x00") && phoneRE.MatchString(r.Chat) &&
-		idRE.MatchString(r.Anchor.ID) && r.Anchor.TS > 0 && r.Anchor.TS <= time.Now().Unix()+300 &&
-		r.Count >= 1 && r.Count <= 50 && r.Seconds >= 1 && r.Seconds <= 120
+		r.Seconds >= 1 && r.Seconds <= 120
+	if r.Mode == "refresh" {
+		return base && r.Count >= 1 && r.Count <= 200 && r.Anchor.ID == "" && r.Anchor.TS == 0
+	}
+	return base && r.Mode == "" && idRE.MatchString(r.Anchor.ID) && r.Anchor.TS > 0 &&
+		r.Anchor.TS <= time.Now().Unix()+300 && r.Count >= 1 && r.Count <= 50
 }
 func verifiedAliases(ctx context.Context, db *sql.DB, chat string) map[string]bool {
 	aliases := map[string]bool{chat: true}
@@ -224,7 +230,11 @@ func selected(data *waHistorySync.HistorySync, aliases map[string]bool, anchor r
 // Whatsmeow's standard decoder has an unbounded decompression allocation.
 // This read-only helper decodes a bounded blob and does not mirror unrelated
 // conversation metadata or secrets into an application archive.
-func download(ctx context.Context, client *whatsmeow.Client, notif *waE2E.HistorySyncNotification) (*waHistorySync.HistorySync, error) {
+type historyDownloader interface {
+	Download(context.Context, whatsmeow.DownloadableMessage) ([]byte, error)
+}
+
+func download(ctx context.Context, client historyDownloader, notif *waE2E.HistorySyncNotification) (*waHistorySync.HistorySync, error) {
 	data := notif.GetInitialHistBootstrapInlinePayload()
 	if len(data) == 0 {
 		var err error
@@ -289,7 +299,7 @@ func operate(r request) response {
 		return response{Error: "backend_busy"}
 	}
 	defer syscall.Flock(fd, syscall.LOCK_UN)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(r.Seconds+20)*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(r.Seconds+25)*time.Second)
 	defer cancel()
 	uri := (&url.URL{Scheme: "file", Path: filepath.Join(r.Store, "session.db")}).String() + "?mode=rw&_foreign_keys=on&_busy_timeout=1000"
 	container, err := sqlstore.New(ctx, "sqlite3", uri, waLog.Noop)
@@ -314,6 +324,9 @@ func operate(r request) response {
 	client.EnableAutoReconnect = false
 	client.InitialAutoReconnect = false
 	client.AutomaticMessageRerequestFromPhone = false
+	if r.Mode == "refresh" {
+		return refresh(ctx, client, r, aliases)
+	}
 	responses := make(chan response, 1)
 	connected := make(chan struct{}, 1)
 	stopped := make(chan struct{}, 1)

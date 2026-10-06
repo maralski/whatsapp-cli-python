@@ -1,4 +1,67 @@
-# Pre-publication security review — 0.3.2
+# Pre-publication security review — 0.4.0
+
+## Scoped refresh adapted from wacli
+
+Reviewed 6 October 2026. The existing helper adds `sync --refresh` through the
+same exact Whatsmeow revision and Go 1.27.1; Python/native/module lock versions
+remain unchanged. The source fingerprint now also covers `refresh.go`.
+
+wacli 0.20.0's presence, offline replay, history notification and primary-phone
+recovery behavior was inspected at a4f23eef7395473931e3a44c93eacd6ebebdc313.
+This independent implementation imports/invokes no wacli code or executable.
+It uses an existing single account identity and nonblocking account lock.
+After the helper returns, the parent reacquires that lock, rechecks identity,
+validates the complete row batch, and writes only the selected chat's two indexes.
+Rolling-cache schemas with views, triggers or generated columns fail closed.
+Revocation tombstones prevent restoration by a subsequent replay.
+
+Available/online presence is a deliberate transient account-visible side effect,
+matching wacli normal sync. A serialized unavailable/offline cleanup runs before
+the connection context is cancelled, including errors. Presence operations are
+bounded to three seconds. Raw presence errors are never output. Failure or forced
+process termination can prevent final presence; no privacy settings are changed.
+
+Offline replay completion describes the device backlog offered by WhatsApp, not
+the full chat timeline. Result booleans keep recent coverage and complete history
+unverified. Counters use fixed names, bounded integers and booleans, not chat names,
+message secrets, account-wide counts or raw errors. Dry runs load/read nothing.
+
+Manual history processing bounds each compressed/decompressed blob to 16 MiB,
+four downloads per invocation, newest selected headers to 200, and returned text
+to 512 KiB beneath the 4 MiB IPC cap. Conversation ID and message key must both
+match the verified phone/LID aliases. Plain text ignores protocol metadata values;
+media, expiring, edit and view-once bodies remain excluded. No history media keys
+or blobs are returned or written to the application archive.
+
+Eligible selected-chat decryption failures use real received IDs and sender/chat
+metadata to request the primary phone's copy after five seconds. At most 20 IDs
+are requested once, each with a three-second deadline; recovery is cancelled when
+a readable event arrives or the receive window ends. Cancellation survives bounded
+row eviction. Hidden/view-once failures and duplicate unavailable-envelope requests
+are excluded. Automatic delayed account-wide phone rerequests/reconnect remain
+disabled. Upstream Whatsmeow still processes account-wide acknowledgments, sender
+retry receipts and its own immediate unavailable-envelope phone requests; selected
+storage is not an account-wide network isolation boundary.
+
+Evidence: **109 offline Python tests** pass on macOS Python 3.11 and 3.14 (the
+uninstalled Segno check skips on the latter), **14 Go tests** with race detection,
+Go vet, native protobuf smoke, Ruff F/E9, and nine synthetic booking-adapter tests
+pass. Synthetic PTY tests require approved execution outside the filesystem sandbox;
+they use no real QR or account. Bandit reports only four reviewed LOW subprocess
+findings in the existing launcher/explicit builder, no medium/high findings.
+Secret scanning and manual review found only fictional fixtures and public source,
+native/module integrity hashes. Account data, private outputs and compiled helpers
+are excluded from publication. Govulncheck 1.8.0 reports zero reachable and zero
+imported-package vulnerabilities; GO-2026-5932 affects the unimported OpenPGP
+package in a required module. This is a maintainer review, not an independent audit.
+
+There is no general verified request for all messages newer than a date. Messages
+already acknowledged or unavailable on the primary phone may remain absent. No
+human sends, new devices, credential extraction or security-setting changes are
+required to implement or test this behavior; booking dispatch/ledger logic is
+unchanged.
+
+## Historical 0.3.2 review
 
 ## Live-event wire-format correction
 

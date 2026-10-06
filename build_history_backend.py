@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent
-SOURCE_FILES = ("main.go", "go.mod", "go.sum")
+SOURCE_FILES = ("main.go", "refresh.go", "go.mod", "go.sum")
 
 
 def source_digest():

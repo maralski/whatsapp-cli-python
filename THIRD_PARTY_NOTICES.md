@@ -12,5 +12,7 @@ must preserve the applicable notices and source availability obligations.
 The backfill design was independently implemented after inspecting
 [wacli](https://github.com/openclaw/wacli/tree/a4f23eef7395473931e3a44c93eacd6ebebdc313).
 wacli is MIT licensed, Copyright (c) 2026 Peter Steinberger. Its bounded anchor,
-identity and coverage approach informed the design; this project does not import,
+identity and coverage approach informed the design. Its presence, offline replay,
+history-notification handling and primary-phone recovery paths also informed the
+independent scoped refresh implementation; this project does not import,
 invoke or ship wacli code or executables.

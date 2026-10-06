@@ -20,8 +20,8 @@ import sys
 import time
 from urllib.parse import quote
 
-VERSION = "0.3.2"
-HISTORY_MODULE_SHA256 = "e4b193e719d21f99f1569dad1f038d7c4baf1ce1343f71d169f2083b91dba518"
+VERSION = "0.4.0"
+HISTORY_MODULE_SHA256 = "14d3f6ecf46b18af587cc90c2de2791acf8487d037535e477a0471533db824af"
 MAX_TEXT = 10000
 MAX_INPUT_BYTES = 40000
 MAX_ROWS = 200
@@ -549,6 +549,7 @@ def parser():
         if name == "send":
             command.add_argument("--allow-self", action="store_true")
         if name == "sync":
+            command.add_argument("--refresh", action="store_true", help="Use the reviewed helper for offline replay, history notifications and scoped recovery; briefly announces online presence")
             command.add_argument("--seconds", type=int, default=30, help="Receive selected-chat text events for 1–120 seconds")
             command.add_argument("--limit", type=int, default=200, help="Maximum selected-chat rows stored (1–200)")
     return result
@@ -614,6 +615,8 @@ def main(argv=None, stdin=None, stdout=None, stderr=None):
                 raise SafeError("invalid_scope", "Sync requires 1–120 seconds and a row limit of 1–200.")
             if not args.execute:
                 data = {"status": "dry_run", "command": args.command}
+                if args.command == "sync" and args.refresh:
+                    data.update(refresh=True, announces_online_presence=True)
                 if body is not None:
                     data.update(message_chars=len(body), no_preview=True, allow_self=args.allow_self)
                 emit(data, stdout)
@@ -624,6 +627,12 @@ def main(argv=None, stdin=None, stdout=None, stderr=None):
                       "online_checked": False}, stdout)
             elif args.command == "send":
                 emit(send_text(args.store, jid, body, allow_self=args.allow_self), stdout)
+            elif args.command == "sync" and args.refresh:
+                try:
+                    emit(history_module().refresh(sys.modules[__name__], args.store, jid,
+                                                  seconds=args.seconds, limit=args.limit), stdout)
+                except (sqlite3.Error, ValueError, TypeError, OverflowError):
+                    raise SafeError("sync_failed", "Scoped refresh failed; no automatic retry or relinking.") from None
             else:
                 emit(backend_operation(args.command, args.store, jid=jid,
                                        seconds=getattr(args, "seconds", 30), limit=getattr(args, "limit", 200)), stdout)

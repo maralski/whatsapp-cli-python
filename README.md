@@ -4,7 +4,7 @@ A small Python CLI for private account linking, bounded local history, and guard
 WhatsApp text sends. Inspired by
 [messages-cli-python](https://github.com/maralski/messages-cli-python).
 
-**Version 0.3.2 has no wacli dependency.** It connects directly through
+**Version 0.4.0 has no wacli dependency.** It connects directly through
 [Neonize 0.5.2](https://github.com/krypton-byte/neonize/releases/tag/0.5.2), a Python
 binding to the native Whatsmeow protocol library. It works in the background;
 WhatsApp Desktop and browser automation are unnecessary. Python **3.11+**, macOS
@@ -41,7 +41,9 @@ synthetic events; it does not instantiate or connect an account client.
 ## Latest-message workflow
 
 Every request for the latest/current messages must run a fresh bounded `sync`
-for the verified selected chat **before** reading the archive. Inspect sync's
+with `--refresh` for the verified selected chat **before** reading the archive.
+Build/install the reviewed helper below first; a missing helper fails closed.
+Inspect sync's
 exit status and result, then use `history-page` for the requested recent interval
 and `history-status`. A dry run or local-only page is not a freshness check.
 Serialize account operations and do not repeat a sync already in flight.
@@ -52,9 +54,59 @@ report current coverage as unverified. When a user knows a newer message exists,
 do not substitute cached older text, declare that no newer message exists, or
 describe the cache as latest. Show exact timestamps and provenance for any text
 actually retrieved. `fetch` and its phone end marker concern earlier messages
-only; this version cannot force-refresh a missing newer interval.
+only. Refresh performs the available recovery steps, but cannot guarantee replay
+of an arbitrary missing newer interval or a previously acknowledged message.
 
-Version 0.3.2 correctly converts Neonize 0.5.2 live-event millisecond timestamps
+## Refresh using wacli's sync behavior
+
+After inspecting [wacli 0.20.0's sync handler](https://github.com/openclaw/wacli/blob/a4f23eef7395473931e3a44c93eacd6ebebdc313/internal/app/sync_events.go)
+and [client setup](https://github.com/openclaw/wacli/blob/a4f23eef7395473931e3a44c93eacd6ebebdc313/internal/wa/session.go),
+this CLI independently implements the applicable behavior in its existing reviewed
+Go helper. It connects the existing device, reports offline replay, downloads
+available non-on-demand history notifications with bounded decoding, and keeps
+only the verified selected phone/LID chat. It retains the newest 1–200 headers
+received during the window. No old message anchor or wacli installation is needed.
+
+```sh
+.venv/bin/python whatsapp_cli.py sync --store /private/whatsapp/account \
+  --chat +12025550123 --refresh --seconds 60 --limit 200 --execute
+```
+
+Like wacli's normal sync, refresh announces the account **available/online** after
+connect and push-name events, then attempts **unavailable/offline** before closing
+on every exit. Cleanup is serialized against late callbacks and each presence
+call has a three-second deadline. It does not change your privacy settings or
+mark the selected conversation read. Failed cleanup is reported when a normal
+result is available; a killed/interrupted process cannot guarantee final presence.
+Plain `sync` retains the original Neonize receive-only path and presence behavior.
+
+For an eligible selected-chat decryption failure, refresh waits five seconds for
+the sender's normal retry, then asks the user's primary phone for that **actual**
+message ID if no readable event has arrived. There is at most one request per ID,
+20 per invocation, with three-second request deadlines and cancellation at exit.
+Intentionally hidden/view-once failures are excluded from our recovery requests.
+Whatsmeow already requests unavailable envelopes internally; we do not duplicate
+that path. Automatic account-wide delayed phone rerequests remain disabled in
+this helper; upstream protocol processing/acknowledgments and sender retry receipts
+can still occur for account-wide events, as with any linked client.
+
+Output distinguishes `offline_replay_announced`, `offline_replay_completed`,
+`selected_undecryptable_events`, `recovery_requests`/`recovery_failures`, history
+download failures, presence results and `response_truncated`. These are receive
+and recovery diagnostics. Even completed offline replay certifies only the
+backlog WhatsApp offered that device. `recent_coverage_verified` and
+`complete_history` remain false. A successful empty result is not evidence that
+the person has sent no newer message.
+
+History blobs are bounded to 16 MiB compressed/decompressed and four downloads
+per refresh. Returned text has a 512 KiB aggregate budget under the 4 MiB IPC cap;
+omitted bodies/evicted headers set `response_truncated`. The optional helper's
+source fingerprint covers the new refresh source. No runtime builds/downloads,
+new dependency, relinking, all-chat mirror, read receipts, or contact messages
+are introduced. wacli's app-state delta recovery concerns metadata, not arbitrary
+message replay; full-history business requests are not invoked.
+
+The Neonize receive path correctly converts live-event millisecond timestamps
 to archive seconds, and accepts plain text accompanied by normal protocol
 metadata without reading or storing metadata values. Sync reports bounded
 `selected_live_events`, `selected_history_events`, and `archived_headers` counters
@@ -242,9 +294,10 @@ do not expand the chat scope. Sync does not enumerate contacts or chats,
 send read receipts deliberately, or expose session keys. The protocol client can
 still receive account-wide events, metadata, and protocol history automatically;
 selection limits the CLI's text index, not all data received by the native client.
-An empty cache does not mean the person sent no messages. This pinned binding
-does not expose on-demand phone history retrieval; earlier messages may remain
-unavailable even after a successful sync. No automatic monitoring is started.
+An empty cache does not mean the person sent no messages. The optional helper
+provides explicit `fetch` and `sync --refresh`; the pinned Python binding alone
+does not expose these recovery controls. Earlier messages may remain unavailable
+even after a successful sync. No automatic monitoring is started.
 
 Sandboxed runners may need approved execution access to update this private
 store, even when receiving messages. `store_access_denied` means the account

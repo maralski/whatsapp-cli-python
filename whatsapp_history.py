@@ -10,7 +10,7 @@ import sqlite3
 import time
 from urllib.parse import quote
 
-BRIDGE_SOURCE_SHA256 = "fd2c3426f147d36deb2f6d3fc92373cf17279f2716590ce9e164d73f51196bee"
+BRIDGE_SOURCE_SHA256 = "e0e67c87e25b1e6cbbbe4ada7f6ab83a333c08502700ff15b0dfa99b1191ba03"
 TABLES = {
     "history_messages": {"chat", "id", "ts", "outgoing", "text", "truncated", "revoked"},
     "history_coverage": {"chat", "phone_end", "inaccessible", "stop", "updated"},
@@ -218,6 +218,92 @@ def verified_bridge(cli, store):
     if code or json.loads(raw) != {"abi": 1, "source_sha256": BRIDGE_SOURCE_SHA256, "go": "go1.27.1"}:
         raise ValueError()
     return path
+
+
+def refresh(cli, store, chat, *, seconds, limit):
+    """One explicit bounded network refresh, followed by scoped local indexing."""
+    chat = cli.phone_jid(chat)
+    if type(seconds) is not int or not 1 <= seconds <= 120 or type(limit) is not int or not 1 <= limit <= 200:
+        raise ValueError()
+    archive = Archive(cli, store)
+    identity = cli.session_identity(archive.store)
+    if identity is None:
+        raise cli.SafeError("pair_required", "Refresh requires the existing linked account.")
+    try:
+        backend = verified_bridge(cli, archive.store)
+    except (OSError, ValueError, cli.SafeError):
+        raise cli.SafeError("history_backend_unavailable", "Explicitly build and install the reviewed refresh/history helper; runtime downloads are disabled.") from None
+    request = {"mode": "refresh", "store": str(archive.store), "identity": identity,
+               "chat": chat, "count": limit, "seconds": seconds}
+    try:
+        code, raw = cli.run_bounded([str(backend)], seconds + 30, json.dumps(request).encode(), max_output_bytes=4 * 1024 * 1024)
+        data = json.loads(raw)
+    except cli.SafeError:
+        raise cli.SafeError("sync_failed", "Refresh interrupted; recent coverage remains unverified. No automatic retry.") from None
+    if code or not isinstance(data, dict):
+        raise ValueError()
+    if data.get("error"):
+        labels = {"store_access_denied", "backend_busy", "account_changed", "not_connected", "connect_timeout",
+                  "account_stopped", "store_unavailable", "unsafe_store", "refresh_timeout"}
+        raise cli.SafeError(data["error"] if data["error"] in labels else "sync_failed", "Refresh failed; no automatic retry, relinking or permission changes.")
+    counters = {"selected_live_events", "selected_history_events", "selected_undecryptable_events", "recovery_requests",
+                "recovery_failures", "history_downloads", "history_download_failures", "presence_failures"}
+    flags = {"offline_replay_announced", "offline_replay_completed", "presence_available_sent", "presence_unavailable_sent"}
+    report, rows = data.get("refresh"), data.get("rows", [])
+    if (data.get("status") != "refreshed" or not isinstance(report, dict) or set(report) != counters | flags
+            or any(type(report[key]) is not int or not 0 <= report[key] <= 10000 for key in counters)
+            or any(type(report[key]) is not bool for key in flags)
+            or type(data.get("response_truncated")) is not bool
+            or not isinstance(rows, list) or len(rows) > limit):
+        raise ValueError()
+    # The helper releases its network/account lock before returning. Reacquire
+    # before touching the legacy rolling cache; concurrent work fails closed.
+    try:
+        lock_fd = os.open(archive.store / ".cli.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    except PermissionError:
+        raise cli.SafeError("store_access_denied", "Account indexing lock was denied; no permission changes or automatic retry.") from None
+    try:
+        import fcntl
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        cli.checked_path(archive.store / ".cli.lock", private=True)
+        if cli.session_identity(archive.store) != identity:
+            raise cli.SafeError("account_changed", "Account changed during refresh; no indexing or automatic retry.")
+        archived = archive.record(chat, rows) if rows else 0
+        cli.checked_path(archive.store / "messages.sqlite3", private=True)
+        for suffix in ("-wal", "-shm", "-journal"):
+            if os.path.lexists(str(archive.store / "messages.sqlite3") + suffix):
+                cli.checked_path(str(archive.store / "messages.sqlite3") + suffix, private=True)
+        with closing(sqlite3.connect(archive.store / "messages.sqlite3", timeout=1)) as db, db:
+            db.execute("PRAGMA trusted_schema=OFF")
+            deadline = time.monotonic() + 3
+            db.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+            # Refuse injected triggers, views, virtual or generated columns.
+            schema = db.execute("SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchall()
+            if (any(kind not in ("table", "index") for kind, _, _ in schema)
+                    or {name for kind, name, sql in schema if kind == "table" and sql.upper().startswith("CREATE TABLE")} != {"messages"}):
+                raise ValueError()
+            fields = db.execute("PRAGMA table_xinfo(messages)").fetchall()
+            if any(row[6] for row in fields) or {row[1] for row in fields} != {
+                    "chat_jid", "msg_id", "ts", "from_me", "text", "revoked", "deleted_for_me", "payload_purged_at"}:
+                raise ValueError()
+            stored = 0
+            for row in rows:
+                if row.get("revoke_id"):
+                    db.execute("INSERT INTO messages(chat_jid,msg_id,ts,from_me,text,revoked) VALUES (?,?,?,0,NULL,1) "
+                               "ON CONFLICT(chat_jid,msg_id) DO UPDATE SET revoked=1,text=NULL", (chat, row["revoke_id"], row["ts"]))
+                elif row.get("text") is not None and row["ts"] >= int(time.time()) - 31 * 86400:
+                    cursor = db.execute("INSERT INTO messages(chat_jid,msg_id,ts,from_me,text) VALUES (?,?,?,?,?) "
+                                        "ON CONFLICT(chat_jid,msg_id) DO NOTHING", (chat, row["id"], row["ts"], int(row["from_me"]), row["text"]))
+                    stored += cursor.rowcount
+            db.execute("DELETE FROM messages WHERE ts<?", (int(time.time()) - 31 * 86400,))
+            db.execute("DELETE FROM messages WHERE rowid IN (SELECT rowid FROM messages ORDER BY ts DESC,rowid DESC LIMIT -1 OFFSET 10000)")
+    except BlockingIOError:
+        raise cli.SafeError("backend_busy", "Account is busy; refresh was received but indexing remains incomplete. No automatic retry.") from None
+    finally:
+        os.close(lock_fd)
+    return {"status": "synced", "refresh": True, "stored": stored, "archived_headers": archived,
+            "complete_history": False, "recent_coverage_verified": False,
+            "response_truncated": data["response_truncated"], **report}
 
 
 def fetch(cli, store, selected, *, pages, count, seconds, anchor_db=None):
