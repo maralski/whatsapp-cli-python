@@ -4,7 +4,7 @@ A small Python CLI for private account linking, bounded local history, and guard
 WhatsApp text sends. Inspired by
 [messages-cli-python](https://github.com/maralski/messages-cli-python).
 
-**Version 0.3.0 has no wacli dependency.** It connects directly through
+**Version 0.3.1 has no wacli dependency.** It connects directly through
 [Neonize 0.5.2](https://github.com/krypton-byte/neonize/releases/tag/0.5.2), a Python
 binding to the native Whatsmeow protocol library. It works in the background;
 WhatsApp Desktop and browser automation are unnecessary. Python **3.11+**, macOS
@@ -52,7 +52,7 @@ report current coverage as unverified. When a user knows a newer message exists,
 do not substitute cached older text, declare that no newer message exists, or
 describe the cache as latest. Show exact timestamps and provenance for any text
 actually retrieved. `fetch` and its phone end marker concern earlier messages
-only; version 0.3.0 cannot force-refresh a missing newer interval.
+only; this version cannot force-refresh a missing newer interval.
 
 ## Older messages and paginated history
 

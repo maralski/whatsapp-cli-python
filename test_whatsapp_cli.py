@@ -1,6 +1,7 @@
 """Synthetic fixtures only: no real WhatsApp stores, accounts, or sends."""
 
 from contextlib import closing
+import errno
 import hashlib
 import io
 import json
@@ -297,6 +298,56 @@ class ChildProcessTests(Fixtures):
         with self.assertRaises(cli.SafeError) as error:
             cli.run_bounded([str(self.root / "missing")], 1)
         self.assertEqual(error.exception.code, "send_not_started")
+
+    def denied_group(self, source, timeout=3):
+        children = []
+        original = cli.subprocess.Popen
+        def spawn(*args, **kwargs):
+            child = original(*args, **kwargs)
+            children.append(child)
+            return child
+        with mock.patch.object(cli.subprocess, "Popen", side_effect=spawn), mock.patch.object(cli.os, "killpg", side_effect=PermissionError(errno.EPERM, SECRET)):
+            with self.assertRaises(cli.SafeError) as caught:
+                self.run_python(source, timeout)
+        self.assertEqual(caught.exception.code, "send_unknown")
+        self.assertNotIn(SECRET, str(caught.exception))
+        self.assertEqual(len(children), 1)
+        child = children[0]
+        self.assertIsNotNone(child.returncode)
+        self.assertTrue(child.stdout.closed)
+        self.assertTrue(child.stderr.closed)
+
+    def test_group_signal_denial_preserves_output_limit_redaction(self):
+        self.denied_group("print('x' * 70000)")
+
+    def test_group_signal_denial_stops_owned_child_after_timeout(self):
+        self.denied_group("import time; time.sleep(5)", 0.05)
+
+    def test_group_signal_denial_does_not_claim_success(self):
+        self.denied_group("print('synthetic-result')")
+
+    def test_cleanup_wait_error_still_closes_pipes(self):
+        children, deadlines = [], []
+        original = cli.subprocess.Popen
+        def spawn(*args, **kwargs):
+            child = original(*args, **kwargs)
+            real_wait = child.wait
+            def denied_wait(timeout=None):
+                deadlines.append(timeout)
+                real_wait(timeout=timeout)  # Reap the synthetic child, then inject the OS error.
+                raise PermissionError(errno.EPERM, SECRET)
+            child.wait = denied_wait
+            children.append(child)
+            return child
+        with mock.patch.object(cli.subprocess, "Popen", side_effect=spawn):
+            with self.assertRaises(cli.SafeError) as caught:
+                self.run_python("print('x' * 70000)")
+        self.assertEqual(caught.exception.code, "send_unknown")
+        self.assertNotIn(SECRET, str(caught.exception))
+        self.assertEqual(deadlines, [2])
+        self.assertIsNotNone(children[0].returncode)
+        self.assertTrue(children[0].stdout.closed)
+        self.assertTrue(children[0].stderr.closed)
 
     def test_child_pipes_after_leader_exit_are_bounded(self):
         if not hasattr(os, "fork"):

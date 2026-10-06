@@ -20,7 +20,7 @@ import sys
 import time
 from urllib.parse import quote
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 HISTORY_MODULE_SHA256 = "fec2957a5f3d42995eb9c5a0fba018194694d822972d01350b4c01f3f700c10f"
 MAX_TEXT = 10000
 MAX_INPUT_BYTES = 40000
@@ -283,6 +283,36 @@ def initialize_store(value):
         os.umask(old_umask)
 
 
+def cleanup_child(process):
+    """Close a launched child without leaking OS errors or waiting indefinitely."""
+    incomplete = False
+    try:
+        # The leader may have exited while descendants still hold our pipes.
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        # A denied group signal does not prove that the group has stopped.
+        # Popen.kill targets only our child and guards against an exited PID.
+        incomplete = True
+        try:
+            process.kill()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        incomplete = True
+    finally:
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None and not stream.closed:
+                try:
+                    stream.close()
+                except OSError:
+                    incomplete = True
+    return incomplete
+
+
 def run_bounded(argv, timeout, request=None, *, pass_fds=(), max_output_bytes=MAX_OUTPUT_BYTES):
     """One POSIX child; bound captured output and redact all backend errors."""
     # Do not pass ambient proxies, loader hooks, account overrides, or secrets.
@@ -336,16 +366,8 @@ def run_bounded(argv, timeout, request=None, *, pass_fds=(), max_output_bytes=MA
         raise SafeError("send_unknown", "Send outcome is unknown. Inspect the actual chat before any manual repeat.") from None
     finally:
         if process is not None:
-            # Kill the process group even if the leader exited with open child pipes.
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
-            if process.stdin is not None and not process.stdin.closed:
-                process.stdin.close()
-            process.stdout.close()
-            process.stderr.close()
+            if cleanup_child(process):
+                raise SafeError("send_unknown", "Backend cleanup could not be fully verified. Operation outcome is unknown; no automatic retry.") from None
 
 
 def open_pair_terminal():

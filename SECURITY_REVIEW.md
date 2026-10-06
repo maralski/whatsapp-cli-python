@@ -1,4 +1,29 @@
-# Pre-publication security review — 0.3.0
+# Pre-publication security review — 0.3.1
+
+## Subprocess cleanup correction
+
+The macOS/Python 3.14 CI run for documentation commit 0a925a2 exposed an existing
+cleanup bug: after the synthetic output-cap test raised its intended safe error,
+a denied process-group SIGKILL raised PermissionError from the finally block.
+That error replaced the redacted result and bypassed pipe closure. The log proves
+the cleanup denial, not the precise kernel timing or a WhatsApp account failure.
+
+Version 0.3.1 handles OS errors from group cleanup, falls back only to the owned
+Popen child, waits at most two seconds for cleanup, and closes all pipes even if
+waiting fails. An incomplete cleanup always returns send_unknown; it never
+silently claims success or retries. Group termination remains the first attempt,
+preserving cleanup when descendants retain pipes after the leader exits. If the
+OS denies group termination, descendant termination cannot be guaranteed.
+
+Four new synthetic regressions cover output overflow, live-child timeout, success
+with denied group cleanup, and a wait failure. The full **94-test** suite passes
+on macOS with Python 3.11 and 3.14; native protobuf smoke and Ruff F/E9 pass.
+Bandit still reports only the two reviewed low-severity subprocess findings in
+the CLI. History code, fresh-sync-first policy, dependency locks, native/helper
+digests, linked account and booking semantics are unchanged. No live WhatsApp
+request or message is needed to test this fix.
+
+## Historical 0.3.0 review
 
 Reviewed 6 October 2026. This extends the maintainer review below; it is not an
 independent audit or a claim of unrestricted account-history availability.
