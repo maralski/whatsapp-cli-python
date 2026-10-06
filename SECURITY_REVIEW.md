@@ -1,4 +1,64 @@
-# Pre-publication security review — 0.2.4
+# Pre-publication security review — 0.3.0
+
+Reviewed 6 October 2026. This extends the maintainer review below; it is not an
+independent audit or a claim of unrestricted account-history availability.
+
+The new runtime is `whatsapp_history.py` plus a small optional Go helper. The
+helper uses the same exact Whatsmeow revision as Neonize 0.5.2, SQLite, protobuf,
+an existing single device and the same nonblocking account lock. It never calls
+pairing, NewDevice, mark-read, contact enumeration, human text send, or wacli APIs.
+The only message dispatch is Whatsmeow's `SendPeerMessage` carrying a history
+protocol request to the linked account's own primary phone. Automatic reconnect,
+message rerequest and retry are disabled in this helper.
+
+Evidence: **90 offline Python tests**, **5 Go tests**, Go race detection and vet,
+native/protobuf smoke checks, and **9 synthetic booking-adapter tests** pass.
+Ruff F/E9 passes. Bandit 1.9.4 reports four low severity subprocess findings
+(two in the existing bounded launcher and two in the explicit build script),
+with no medium/high results. Argument lists use no shell; the builder's Go path
+is an explicit local developer choice. Secret scanning finds only fictional
+fixtures, public dependency/native/source digests, and no credentials.
+
+The initial Go 1.26.0 build was rejected during review: govulncheck found sixteen
+reachable standard-library advisories. The reviewed helper is built with pinned
+**Go 1.27.1**, verified through Go's toolchain checksum mechanism. Govulncheck
+1.8.0 then reports **zero reachable and zero imported-package vulnerabilities**.
+It reports GO-2026-5932 in the required x/crypto module's OpenPGP package, which
+this helper does not import or call. This result covers the new helper, not an
+independent audit of the unchanged opaque Neonize release library. The Python
+dependency lock and official native digests remain unchanged.
+
+The installed macOS arm64 Neonize artifact's Go build metadata identifies
+Go 1.26.8 and the expected upstream revision; it is not the vulnerable initial
+1.26.0 helper build. This metadata check is not a full native-library audit.
+
+History boundaries: explicit one-chat operations only, uniquely verified PN/LID
+aliases, both conversation ID and message key filtering, and a real known anchor.
+Request count is 1–50, pages 1–5, response time 1–120 seconds with bounded
+connection allowance, output at most 4 MiB per pipe. Compressed/decompressed
+history blobs are capped at 16 MiB. Automatic account-wide history downloads are
+disabled. Only on-demand notifications are downloaded; unrelated conversations,
+keys, media bodies and contact metadata are not copied to the archive. Expiring,
+view-once, edited and media wrappers are never unpacked for text.
+
+The private archive validates ordinary non-generated columns, rejects triggers,
+views and unsafe files, uses parameterized queries, query-only local readers,
+trusted_schema OFF, SQLite length/time budgets, and stable rowid-bound cursors.
+Revocation tombstones purge text and prevent replay resurrection. Phone end,
+inaccessible history, empty anchors, timeout and no progress are distinct;
+complete_history is always false. A late response cannot be conclusively tied to
+one request, so chat/anchor filtering and explicit incompleteness remain necessary.
+An explicit compatible cache import accesses only this chat/date range's message
+IDs, timestamps, direction, text and deletion flags, not session/key/media columns.
+
+Source-module digest and private manifest/binary digest/platform/compiler checks
+precede optional helper execution. Runtime build/download paths do not exist.
+These checks do not defend against compromise of the owning user. Upstream native
+client memory/metadata behavior and WhatsApp account restrictions remain risks.
+The fixed-recipient booking adapter, interpreter pin and durable pending/sent
+ledger are preserved during installation; no sends are needed for validation.
+
+## Historical 0.2.4 review
 
 Reviewed 6 October 2026. Maintainer review plus automated checks; not an
 independent audit or certification.

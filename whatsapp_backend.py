@@ -145,7 +145,7 @@ def chat_aliases(store, chat):
 
 class TextIndex:
     """Bounded selected-chat cache; no credentials, contact enumeration or media."""
-    def __init__(self, store, chat, limit, *, aliases=None):
+    def __init__(self, store, chat, limit, *, aliases=None, archive=None):
         self.path = store / "messages.sqlite3"
         self.chat = chat
         self.aliases = {chat} if aliases is None else set(aliases) | {chat}
@@ -153,6 +153,8 @@ class TextIndex:
         self.stored = 0
         self.failed = False
         self.lock = threading.Lock()
+        self.archive = archive
+        self.headers = 0
 
     def record(self, msg_id, timestamp, outgoing, text):
         if not isinstance(msg_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", msg_id):
@@ -184,6 +186,24 @@ class TextIndex:
                 self.failed = True
 
     def payload(self, msg_id, timestamp, outgoing, message):
+        if self.archive is not None:
+            try:
+                text = plain_text(message)
+                if not isinstance(text, str) or not text.strip() or "\x00" in text:
+                    text = None
+                row = {"id": msg_id, "ts": timestamp, "from_me": bool(outgoing),
+                       "text": text[:10000] if text is not None else None,
+                       "text_truncated": text is not None and len(text) > 10000}
+                if message.HasField("protocolMessage"):
+                    protocol = message.protocolMessage
+                    if protocol.type == 0 and protocol.key.remoteJID in self.aliases:
+                        row["revoke_id"] = protocol.key.ID
+                with self.lock:
+                    if self.headers < self.limit:
+                        self.archive.record(self.chat, [row])
+                        self.headers += 1
+            except (sqlite3.Error, ValueError, UnicodeError, OSError, self.archive.cli.SafeError):
+                self.failed = True
         if message.HasField("protocolMessage"):
             protocol = message.protocolMessage
             if protocol.type == 0 and protocol.key.remoteJID in self.aliases | {""}:
@@ -206,7 +226,7 @@ class TextIndex:
                 continue
             for item in conversation.messages:
                 scanned += 1
-                if scanned > 10000 or self.stored >= self.limit:
+                if scanned > 10000 or self.stored >= self.limit or (self.archive is not None and self.headers >= self.limit):
                     return
                 msg = item.message
                 if msg.key.remoteJID not in self.aliases:
@@ -285,6 +305,7 @@ def operate(request, cli, protocol):
     aliases = chat_aliases(store, request["jid"]) if command == "sync" else None
     index = TextIndex(store, request["jid"], request["limit"], aliases=aliases) if command in ("send", "sync") else None
     if command == "sync":
+        index.archive = cli.history_module().Archive(cli, store)
         client.event(protocol.MessageEv)(index.live)
         client.event(protocol.HistorySyncEv)(index.history)
 

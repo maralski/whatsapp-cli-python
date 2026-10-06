@@ -41,6 +41,15 @@ with tempfile.TemporaryDirectory() as temporary:
     alias_index.payload("LID_REVOKE", now, False, protocol.Message(protocolMessage={"type": 0, "key": {"ID": "LID_HISTORY", "remoteJID": lid}}))
     rows = cli.read_history(store / "messages.sqlite3", (jid, now - 1, now + 1, 20))
     assert {row["id"] for row in rows} == {"HISTORY", "LID_LIVE"}
+    archive = cli.history_module().Archive(cli, store)
+    archived_index = backend.TextIndex(store, jid, 2, archive=archive)
+    archived_index.payload("OLD_ARCHIVE", now - 90 * 86400, False, protocol.Message(conversation="synthetic older text"))
+    archived_index.payload("MEDIA_ANCHOR", now, False, protocol.Message(imageMessage={"caption": "never archive media caption"}))
+    archived_index.payload("OVER_HEADER_BUDGET", now, False, protocol.Message(conversation="must not enter archive"))
+    assert not archived_index.failed and archived_index.headers == 2
+    coverage = archive.coverage(jid)
+    assert coverage["headers"] == 2 and coverage["text_messages"] == 1
+    assert archive.anchors(jid)[0]["id"] == "OLD_ARCHIVE"
     assert cli.session_identity(store) is None
     assert not (store / ".cli.lock").exists()
 assert backend.disabled is __import__("neonize.download", fromlist=["download"]).download

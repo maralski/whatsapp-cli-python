@@ -5,6 +5,8 @@ import argparse
 from contextlib import closing
 import datetime as dt
 import fcntl
+import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -18,7 +20,8 @@ import sys
 import time
 from urllib.parse import quote
 
-VERSION = "0.2.4"
+VERSION = "0.3.0"
+HISTORY_MODULE_SHA256 = "fec2957a5f3d42995eb9c5a0fba018194694d822972d01350b4c01f3f700c10f"
 MAX_TEXT = 10000
 MAX_INPUT_BYTES = 40000
 MAX_ROWS = 200
@@ -280,7 +283,7 @@ def initialize_store(value):
         os.umask(old_umask)
 
 
-def run_bounded(argv, timeout, request=None, *, pass_fds=()):
+def run_bounded(argv, timeout, request=None, *, pass_fds=(), max_output_bytes=MAX_OUTPUT_BYTES):
     """One POSIX child; bound captured output and redact all backend errors."""
     # Do not pass ambient proxies, loader hooks, account overrides, or secrets.
     environment = {"PATH": "/usr/bin:/bin", "LANG": "C", "HOME": str(Path.home())}
@@ -321,7 +324,7 @@ def run_bounded(argv, timeout, request=None, *, pass_fds=()):
                         continue
                     target = captured[key.data]
                     target.extend(chunk)
-                    if len(target) > MAX_OUTPUT_BYTES:
+                    if len(target) > max_output_bytes:
                         raise ValueError()
         result = process.wait(timeout=max(0.001, deadline - time.monotonic()))
         return result, bytes(captured["stdout"])
@@ -472,6 +475,16 @@ def send_text(store, jid, text, *, allow_self=False):
     return backend_operation("send", store, jid=jid, text=text, allow_self=allow_self)
 
 
+def history_module():
+    path, info = checked_path(Path(__file__).with_name("whatsapp_history.py"))
+    if info.st_size > 64 * 1024 or hashlib.sha256(path.read_bytes()).hexdigest() != HISTORY_MODULE_SHA256:
+        raise SafeError("history_module_unavailable", "History support source differs from the reviewed version.")
+    spec = importlib.util.spec_from_file_location("whatsapp_history_private", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def parser():
     result = Parser(description=__doc__, allow_abbrev=False)
     result.add_argument("--version", action="version", version="whatsapp-cli-python " + VERSION)
@@ -483,6 +496,22 @@ def parser():
     history.add_argument("--until", required=True)
     history.add_argument("--limit", type=int, default=20)
     history.add_argument("--execute", action="store_true")
+    for name in ("fetch", "history-page", "history-status"):
+        command = commands.add_parser(name, allow_abbrev=False)
+        command.add_argument("--store", required=True)
+        command.add_argument("--chat", required=True)
+        command.add_argument("--execute", action="store_true")
+        if name != "history-status":
+            command.add_argument("--since", required=True)
+            command.add_argument("--until", required=True)
+            command.add_argument("--limit", type=int, default=50)
+        if name == "history-page":
+            command.add_argument("--cursor")
+        if name == "fetch":
+            command.add_argument("--anchor-db", help="Explicit compatible local message index for this chat only; no credentials imported")
+            command.add_argument("--count", type=int, default=50)
+            command.add_argument("--pages", type=int, default=1)
+            command.add_argument("--seconds", type=int, default=60)
     for name in ("init", "status", "pair", "sync", "send"):
         command = commands.add_parser(name, allow_abbrev=False)
         command.add_argument("--store", required=True, help="Absolute path to a private CLI account store")
@@ -511,7 +540,36 @@ def main(argv=None, stdin=None, stdout=None, stderr=None):
             raise SafeError("unsupported_python", "The pinned direct backend requires Python 3.11 or newer.")
         if os.name != "posix":
             raise SafeError("unsupported_platform", "This version supports macOS and Linux only.")
-        if args.command == "history":
+        if args.command in ("fetch", "history-page", "history-status"):
+            local_path(args.store)
+            phone_jid(args.chat)
+            # Validate without loading support files or inspecting the account.
+            if args.command != "history-status":
+                if not timestamp(args.since) < timestamp(args.until) or not 1 <= args.limit <= MAX_ROWS:
+                    raise SafeError("invalid_scope", "Choose a positive date range and 1–200 rows.")
+            if args.command == "fetch" and not (1 <= args.count <= 50 and 1 <= args.pages <= 5 and 1 <= args.seconds <= 120):
+                raise SafeError("invalid_scope", "Fetching requires 1–50 messages per batch, 1–5 pages and 1–120 seconds.")
+            if args.command == "fetch" and args.anchor_db is not None:
+                local_path(args.anchor_db)
+            if not args.execute:
+                emit({"status": "dry_run", "command": args.command}, stdout)
+            else:
+                support = history_module()
+                try:
+                    archive = support.Archive(sys.modules[__name__], args.store)
+                    if args.command == "history-status":
+                        value = archive.coverage(phone_jid(args.chat))
+                    else:
+                        selected = support.scope(sys.modules[__name__], args.chat, args.since, args.until, args.limit)
+                        if args.command == "history-page":
+                            value = archive.page(selected, args.cursor)
+                        else:
+                            value = support.fetch(sys.modules[__name__], args.store, selected,
+                                                  pages=args.pages, count=args.count, seconds=args.seconds, anchor_db=args.anchor_db)
+                    emit(value, stdout)
+                except (sqlite3.Error, ValueError, TypeError, OverflowError):
+                    raise SafeError("history_unavailable", "Scoped history archive is unavailable; no automatic retry.") from None
+        elif args.command == "history":
             local_path(args.db)
             scope = history_scope(args.chat, args.since, args.until, args.limit)
             if not args.execute:

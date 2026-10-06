@@ -27,4 +27,6 @@ SESSION_REVOKED
 .DS_Store
 dist/
 build/
+history-runtime/
+whatsapp-history
 *.egg-info/

@@ -4,7 +4,7 @@ A small Python CLI for private account linking, bounded local history, and guard
 WhatsApp text sends. Inspired by
 [messages-cli-python](https://github.com/maralski/messages-cli-python).
 
-**Version 0.2.4 has no wacli dependency.** It connects directly through
+**Version 0.3.0 has no wacli dependency.** It connects directly through
 [Neonize 0.5.2](https://github.com/krypton-byte/neonize/releases/tag/0.5.2), a Python
 binding to the native Whatsmeow protocol library. It works in the background;
 WhatsApp Desktop and browser automation are unnecessary. Python **3.11+**, macOS
@@ -18,7 +18,7 @@ accounts and conversations you are authorized to access.
 
 ## Install
 
-Keep both runtime files, `whatsapp_cli.py` and `whatsapp_backend.py`, together.
+Keep `whatsapp_cli.py`, `whatsapp_backend.py`, and `whatsapp_history.py` together.
 Install reviewed dependencies explicitly in a dedicated environment:
 
 ```sh
@@ -38,7 +38,67 @@ eager import; this CLI never downloads or repairs dependencies at runtime.
 is deliberately disabled. The offline smoke check loads the library and parses
 synthetic events; it does not instantiate or connect an account client.
 
-## Account lifecycle
+## Older messages and paginated history
+
+`fetch` requests earlier message batches from your primary phone through the
+existing linked device. It never sends a text to the selected person, marks their
+chat read, pairs another device, or invokes wacli. The optional helper requires
+Go 1.27.1 and a C compiler to build; ordinary pairing/sync/send retain the pinned
+Neonize backend. Build explicitly, placing `history-runtime` **beside** the store:
+
+```sh
+# /private/whatsapp/account is your EXISTING store, not a new account.
+.venv/bin/python build_history_backend.py --output /private/whatsapp/history-runtime
+
+.venv/bin/python whatsapp_cli.py fetch --store /private/whatsapp/account \
+  --chat +12025550123 --since 1970-01-01T00:00:00Z \
+  --until 2026-10-06T23:59:59Z --count 50 --pages 5 --seconds 120 --execute
+
+.venv/bin/python whatsapp_cli.py history-page --store /private/whatsapp/account \
+  --chat +12025550123 --since 1970-01-01T00:00:00Z \
+  --until 2026-10-06T23:59:59Z --limit 50 --execute
+
+.venv/bin/python whatsapp_cli.py history-status --store /private/whatsapp/account \
+  --chat +12025550123 --execute
+```
+
+Pass a returned `next_cursor` to the same `history-page` chat/date range to get
+the next page. These new commands accept dates from 1970 onward without a 31-day
+window. Each network invocation is bounded to 1–50 messages per batch, 1–5
+batches, and a 1–120-second response budget, plus bounded connection time.
+Deliberately repeat `fetch` to continue older batches. No automatic retry or
+all-chat backfill exists. A batch may cross the `--since` stop boundary; that
+selected chat's complete bounded batch is archived, while local pages apply
+exact date filtering. `--until` filters displayed pages and explicit cache import;
+phone fetching always proceeds backward from the oldest available local anchor.
+
+`history.sqlite3` is a separate private archive. Explicit selected-chat sync now
+retains message headers, including media anchors without media bodies, and
+available plain text there. The original rolling `messages.sqlite3` cache and
+`history --db` behavior remain available. Archive rows are deduplicated; received
+revocations purge text and prevent replay restoration. This archive grows only
+through explicit scoped sync/fetch/import operations and does not automatically
+prune older fetched messages.
+
+The phone protocol requires a **real known message ID and timestamp**. An empty
+chat returns `no_local_anchor` without connecting. Run scoped `sync` while a new
+message arrives, or explicitly add `--anchor-db /absolute/local/messages.sqlite3`
+to import only this chat/date range from a compatible existing plaintext message
+index. Such an index must have the documented `messages` columns, including
+revoked/deleted/purged flags; no session tables, credentials or media keys are
+imported. This can read a retained compatible cache without installing or running
+the program that created it. Never invent an anchor or relink to work around this.
+
+Responses expose `stop_reason` and `phone_reported_end`; `complete_history` always
+remains false. Phone-offline timeouts, no progress, budget limits, unavailable
+older history, and an explicit phone end marker are distinct. An end marker is
+not proof of all-time access to deleted, expiring or unavailable messages. Late
+protocol responses cannot always be correlated to an exact request; only the
+selected verified phone/LID chat and messages no newer than its anchor are kept.
+Runtime source and helper digests are verified; runtime builds/downloads are
+disabled. See [third-party notices](THIRD_PARTY_NOTICES.md).
+
+## Account lifecycle commands
 
 Commands default to **dry-run**, including init, status, and pairing. Execution
 requires `--execute`. Dry-run validates input without inspecting account files,
