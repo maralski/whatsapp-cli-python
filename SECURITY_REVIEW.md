@@ -1,4 +1,30 @@
-# Pre-publication security review — 0.3.1
+# Pre-publication security review — 0.3.2
+
+## Live-event wire-format correction
+
+Neonize 0.5.2's pinned upstream EncodeMessageInfo serializes live timestamps with
+UnixMilli, while the WebMessageInfo history timestamp is seconds. Earlier synthetic
+live fixtures incorrectly used seconds, masking rejection of real live timestamps
+by the seconds-based cache/archive validation. Version 0.3.2 converts only the live
+event timestamp at its ABI boundary. History and send/cache timestamps are unchanged.
+
+Normal messageContextInfo metadata may accompany plain text. Both Python and the
+optional history helper ignore that field's values while permitting otherwise
+literal conversation/extended text. Metadata is not extracted, stored or returned;
+wrappers, media, mixed content, edits and expiring content retain their exclusions.
+Seven new offline Python regressions and one Go regression cover wire units,
+metadata non-access, privacy boundaries, exact chat scope and bounded diagnostics.
+Real protobuf smoke fixtures now use milliseconds for live events. Sync adds only
+bounded selected-chat event/header counters, not unrelated chat data or raw errors.
+
+This fix does not certify that older missed/acknowledged messages will replay.
+Fresh sync remains mandatory before latest-message requests, with explicitly
+unverified coverage if the known newer message is not retrieved. There is no
+wacli runtime use, relinking, automatic retry, security-setting change or send.
+Dependency locks and the official Neonize native digests remain unchanged;
+the optional helper is rebuilt from its reviewed source with pinned Go 1.27.1.
+
+## Historical 0.3.1 review
 
 ## Subprocess cleanup correction
 

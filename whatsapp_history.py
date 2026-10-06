@@ -10,7 +10,7 @@ import sqlite3
 import time
 from urllib.parse import quote
 
-BRIDGE_SOURCE_SHA256 = "97c02ba670e568dcf9c47f8a6912e4707e8800c9591da522272778877acbd187"
+BRIDGE_SOURCE_SHA256 = "fd2c3426f147d36deb2f6d3fc92373cf17279f2716590ce9e164d73f51196bee"
 TABLES = {
     "history_messages": {"chat", "id", "ts", "outgoing", "text", "truncated", "revoked"},
     "history_coverage": {"chat", "phone_end", "inaccessible", "stop", "updated"},

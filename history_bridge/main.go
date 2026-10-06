@@ -158,7 +158,12 @@ func messageRow(id string, ts int64, outgoing bool, msg *waE2E.Message, aliases 
 		return r, true
 	}
 	fields := 0
-	msg.ProtoReflect().Range(func(_ protoreflect.FieldDescriptor, _ protoreflect.Value) bool { fields++; return true })
+	msg.ProtoReflect().Range(func(field protoreflect.FieldDescriptor, _ protoreflect.Value) bool {
+		if field.Name() != "messageContextInfo" {
+			fields++
+		}
+		return true
+	})
 	var text string
 	if fields == 1 && msg.Conversation != nil {
 		text = msg.GetConversation()

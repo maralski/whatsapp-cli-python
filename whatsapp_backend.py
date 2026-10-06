@@ -99,6 +99,9 @@ def load_protocol(cli):
 def plain_text(message):
     # Do not unpack disappearing/view-once/media/edited payloads or index them.
     fields = {descriptor.name for descriptor, value in message.ListFields()}
+    # Normal protocol metadata can accompany plain text. Never read or store
+    # metadata values (including message secrets); all other siblings stay barred.
+    fields.discard("messageContextInfo")
     if fields == {"conversation"}:
         return message.conversation
     if fields == {"extendedTextMessage"}:
@@ -155,6 +158,8 @@ class TextIndex:
         self.lock = threading.Lock()
         self.archive = archive
         self.headers = 0
+        self.selected_live_events = 0
+        self.selected_history_events = 0
 
     def record(self, msg_id, timestamp, outgoing, text):
         if not isinstance(msg_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", msg_id):
@@ -213,11 +218,19 @@ class TextIndex:
 
     def live(self, client, event):
         source = event.Info.MessageSource
-        if source.IsGroup or any((event.IsEphemeral, event.IsViewOnce, event.IsViewOnceV2, event.IsViewOnceV2Extension, event.IsEdit)):
+        if source.IsGroup:
             return
         chat = source.Chat.User + "@" + source.Chat.Server
         if chat in self.aliases:
-            self.payload(event.Info.ID, event.Info.Timestamp, source.IsFromMe, event.Message)
+            self.selected_live_events = min(10000, self.selected_live_events + 1)
+            if any((event.IsEphemeral, event.IsViewOnce, event.IsViewOnceV2, event.IsViewOnceV2Extension, event.IsEdit)):
+                return
+            # Neonize 0.5.2 EncodeMessageInfo uses UnixMilli. WebMessageInfo
+            # history timestamps below already use seconds; do not convert them.
+            timestamp_ms = event.Info.Timestamp
+            if type(timestamp_ms) is not int or timestamp_ms <= 0:
+                return
+            self.payload(event.Info.ID, timestamp_ms // 1000, source.IsFromMe, event.Message)
 
     def history(self, client, event):
         scanned = 0
@@ -231,6 +244,7 @@ class TextIndex:
                 msg = item.message
                 if msg.key.remoteJID not in self.aliases:
                     continue
+                self.selected_history_events = min(10000, self.selected_history_events + 1)
                 self.payload(msg.key.ID, msg.messageTimestamp, msg.key.fromMe, msg.message)
 
 
@@ -346,7 +360,10 @@ def operate(request, cli, protocol):
                 time.sleep(0.1)
             if index.failed or unsafe_auth.is_set() or finished.is_set():
                 return {"error": "sync_failed"}
-            return {"status": "synced", "stored": index.stored, "complete_history": False}
+            return {"status": "synced", "stored": index.stored, "complete_history": False,
+                    "selected_live_events": index.selected_live_events,
+                    "selected_history_events": index.selected_history_events,
+                    "archived_headers": index.headers}
         recipient = cli.phone_jid(request["jid"])
         if me.User + "@" + me.Server == recipient and request.get("allow_self") is not True:
             return {"error": "pair_required"}

@@ -312,7 +312,7 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(backend.plain_text(FakeMessage("literal @12025550123 https://example.com")), "literal @12025550123 https://example.com")
         for field in ("ephemeralMessage", "viewOnceMessage", "imageMessage", "protocolMessage"):
             self.assertIsNone(backend.plain_text(FakeMessage(**{field: object()})))
-        self.assertIsNone(backend.plain_text(FakeMessage("body", messageContextInfo=object())))
+        self.assertEqual(backend.plain_text(FakeMessage("body", messageContextInfo=object())), "body")
 
     def test_expiring_extended_text_not_persisted(self):
         context = types.SimpleNamespace(expiration=60, ephemeralSettingTimestamp=0)

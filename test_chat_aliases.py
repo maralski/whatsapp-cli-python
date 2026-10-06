@@ -74,7 +74,7 @@ class ChatAliasTests(unittest.TestCase):
         def live(identifier, chat):
             user, server = chat.split('@')
             source = types.SimpleNamespace(Chat=types.SimpleNamespace(User=user, Server=server), IsGroup=False, IsFromMe=False)
-            return types.SimpleNamespace(Info=types.SimpleNamespace(MessageSource=source, ID=identifier, Timestamp=now),
+            return types.SimpleNamespace(Info=types.SimpleNamespace(MessageSource=source, ID=identifier, Timestamp=now * 1000 + 432),
                 Message=FakeMessage('selected live'), IsEphemeral=False, IsViewOnce=False,
                 IsViewOnceV2=False, IsViewOnceV2Extension=False, IsEdit=False)
         index.live(None, live('LIVE', LID))

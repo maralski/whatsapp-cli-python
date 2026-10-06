@@ -83,3 +83,16 @@ func TestBounds(t *testing.T) {
 		}
 	}
 }
+
+func TestProtocolMetadataAlongsidePlainText(t *testing.T) {
+	message := &waE2E.Message{Conversation: proto.String("selected text"), MessageContextInfo: &waE2E.MessageContextInfo{MessageSecret: []byte("synthetic-unused-metadata")}}
+	r, ok := messageRow("META", 100, false, message, map[string]bool{chat: true})
+	if !ok || r.Text == nil || *r.Text != "selected text" {
+		t.Fatal("normal metadata blocked text")
+	}
+	message.ImageMessage = &waE2E.ImageMessage{Caption: proto.String("do not expose")}
+	r, _ = messageRow("MIXED", 100, false, message, map[string]bool{chat: true})
+	if r.Text != nil {
+		t.Fatal("mixed media exposed")
+	}
+}

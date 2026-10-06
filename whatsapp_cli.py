@@ -20,8 +20,8 @@ import sys
 import time
 from urllib.parse import quote
 
-VERSION = "0.3.1"
-HISTORY_MODULE_SHA256 = "fec2957a5f3d42995eb9c5a0fba018194694d822972d01350b4c01f3f700c10f"
+VERSION = "0.3.2"
+HISTORY_MODULE_SHA256 = "e4b193e719d21f99f1569dad1f038d7c4baf1ce1343f71d169f2083b91dba518"
 MAX_TEXT = 10000
 MAX_INPUT_BYTES = 40000
 MAX_ROWS = 200
@@ -487,7 +487,13 @@ def backend_operation(command, store, *, jid=None, text=None, allow_self=False, 
         if command == "sync":
             if type(data.get("stored")) is not int or not 0 <= data["stored"] <= limit:
                 raise ValueError()
-            return {"status": "synced", "stored": data["stored"], "complete_history": False}
+            result = {"status": "synced", "stored": data["stored"], "complete_history": False}
+            for name, maximum in (("selected_live_events", 10000), ("selected_history_events", 10000), ("archived_headers", limit)):
+                if name in data:
+                    if type(data[name]) is not int or not 0 <= data[name] <= maximum:
+                        raise ValueError()
+                    result[name] = data[name]
+            return result
         return {"status": "linked"}
     except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
         raise SafeError("send_unknown" if command == "send" else "operation_unknown", "Operation outcome unknown. Inspect account state before any manual repeat.") from None
