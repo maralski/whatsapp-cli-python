@@ -18,7 +18,7 @@ import sys
 import time
 from urllib.parse import quote
 
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 MAX_TEXT = 10000
 MAX_INPUT_BYTES = 40000
 MAX_ROWS = 200
@@ -447,6 +447,8 @@ def backend_operation(command, store, *, jid=None, text=None, allow_self=False, 
             }
             detail = details.get(data.get("reason"), "")
             raise SafeError(error, pair_errors[error] + (" " + detail if detail else ""))
+        if data.get("error") == "store_access_denied":
+            raise SafeError("store_access_denied", "Local account-store access was denied before dispatch. Use an approved execution context; no automatic retry or permission changes.")
         if data.get("error") in {"backend_unavailable", "backend_busy", "not_connected", "pair_required", "sync_failed"}:
             raise SafeError(data["error"], "Direct backend unavailable or account operation stopped; no automatic retry.")
         expected = {"send": "accepted", "sync": "synced", "pair": "linked"}[command]

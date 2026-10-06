@@ -4,7 +4,7 @@ A small Python CLI for private account linking, bounded local history, and guard
 WhatsApp text sends. Inspired by
 [messages-cli-python](https://github.com/maralski/messages-cli-python).
 
-**Version 0.2.3 has no wacli dependency.** It connects directly through
+**Version 0.2.4 has no wacli dependency.** It connects directly through
 [Neonize 0.5.2](https://github.com/krypton-byte/neonize/releases/tag/0.5.2), a Python
 binding to the native Whatsmeow protocol library. It works in the background;
 WhatsApp Desktop and browser automation are unnecessary. Python **3.11+**, macOS
@@ -149,12 +149,22 @@ or promise exactly-once delivery.
 
 Sync accepts 1–120 seconds and 1–200 newly cached rows. It handles selected-chat
 live and available history-sync events, without requesting an exhaustive history
-export. Only exact phone-address matches are indexed; unrelated LIDs are never
-inferred to belong to that person. A WhatsApp LID-addressed chat can therefore be
-absent from this phone-scoped cache. Sync does not enumerate contacts or chats,
+export. Exact phone matches and uniquely mapped privacy IDs (LIDs) are indexed
+under the selected phone. LID mappings come only from the owned account's local
+`whatsmeow_lid_map`, with a unique forward and reverse match; names are never
+used to infer identity. Missing, conflicting, generated, or view-based mappings
+do not expand the chat scope. Sync does not enumerate contacts or chats,
 send read receipts deliberately, or expose session keys. The protocol client can
 still receive account-wide events, metadata, and protocol history automatically;
 selection limits the CLI's text index, not all data received by the native client.
+An empty cache does not mean the person sent no messages. This pinned binding
+does not expose on-demand phone history retrieval; earlier messages may remain
+unavailable even after a successful sync. No automatic monitoring is started.
+
+Sandboxed runners may need approved execution access to update this private
+store, even when receiving messages. `store_access_denied` means the account
+lock was denied before dispatch. Use the runner's normal approval mechanism;
+the CLI does not loosen filesystem permissions or grant permanent OS access.
 
 The cache stores plain text from the selected chat, skipping media, edits,
 view-once, and disappearing payloads. Available revocation events purge indexed

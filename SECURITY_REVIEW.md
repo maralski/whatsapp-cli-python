@@ -1,6 +1,6 @@
-# Pre-publication security review — 0.2.3
+# Pre-publication security review — 0.2.4
 
-Reviewed 4 October 2026. Maintainer review plus automated checks; not an
+Reviewed 6 October 2026. Maintainer review plus automated checks; not an
 independent audit or certification.
 
 ## Scope and evidence
@@ -10,7 +10,7 @@ synthetic tests, native smoke check, documentation, licensing, ignore rules and
 CI workflow were reviewed before publication. No native binaries, account stores,
 QR artifacts, real recipient data, or private outputs are published.
 
-**67 offline tests pass** on this Mac with Python 3.11.6. An additional **9
+**77 offline tests pass** on this Mac with Python 3.11.6. An additional **9
 synthetic booking-adapter tests** verify preservation of the existing durable
 ledger, accepted/pending entries, concurrent dispatch, recipient guards, and
 notice confirmation. The adapter is staged separately and is not activated by
@@ -71,7 +71,7 @@ Python/native dependencies are outside the CLI's isolation guarantees.
 | Log privacy | Python and native stdout/stderr redirected at fd level before import; a private result pipe exposes only reviewed fields. No raw exceptions, credentials or bodies in errors. |
 | Local session status | Read-only/query-only ordinary-table validation; SELECT jid only, LIMIT 2, generated/view identities rejected. No key columns queried. Public device identity is used internally and not displayed. |
 | History | Read-only/query-only SQLite, bound parameters, restricted authorizer, validated ordinary table, limited chat/date/rows/text, progress budget, revoked/deleted/purged exclusion. Views and generated required fields rejected. |
-| Text caching | Selected exact phone chat only. Available live/history plain text; media/edits/view-once/disappearing content skipped. Available revocations purge text, tombstones prevent replay restoration while retained. 31-day/10,000-row pruning at writes. Native account-wide metadata/events still occur and cannot be represented as only selected-chat access. |
+| Text caching | Selected exact phone chat plus uniquely verified local LID alias only. Both forward and reverse mappings must be unique in an ordinary nongenerated metadata table, queried read-only with bound parameters and a progress budget. Names never authorize aliases. All rows remain keyed to the selected phone. Available live/history plain text; media/edits/view-once/disappearing content skipped. Available alias revocations purge text, tombstones prevent replay restoration while retained. 31-day/10,000-row pruning at writes. Native account-wide metadata/events still occur and cannot be represented as only selected-chat access. |
 | Acceptance and retry | Protocol acceptance is not delivery. One send invocation, no CLI retry or fallback. Self-send opt-in checked both parent and worker. Unknown post-dispatch results stay unknown; cache failure after acceptance is a boolean warning. Upstream reconnect/retry behavior remains. |
 | Booking continuity | Staged replacement uses same ledger schema/path and pending-before-send transaction. Existing accepted and uncertain rows remain protected. Working installed transport is preserved until intentional native pairing and activation. |
 | Publication/CI | Explicit source allowlist; no databases/native artifacts/private output. Immutable official actions, read-only contents, no persisted checkout credentials or account secrets, synthetic tests and offline native smoke. Dependency installation is locked and wheels-only. |
@@ -120,6 +120,27 @@ writer and the installed Segno QR renderer with synthetic pairing data. Terminal
 flags, signal state and result-pipe separation are checked; QR bytes are discarded.
 These checks load no account client and do not connect. CI repeats the real
 renderer check after installing the locked dependencies on all four runners.
+
+## Verified privacy-ID reads and permission diagnosis in 0.2.4
+
+The previous phone-only cache silently skipped LID-addressed messages, even
+when the native account contained an exact identity mapping. The sync worker now
+accepts one unique forward/reverse mapping for the selected phone. Contradictory,
+missing, malformed, generated, or view-based metadata never broadens scope.
+History conversation and message keys must both match an accepted address.
+Live/history events and revocations use the same canonical phone cache key.
+Send arguments, fixed recipients, link-preview controls and caller ledgers are
+unchanged. Ten additional tests cover these boundaries and safe permission errors;
+the installed-wheel smoke exercises real LID live/history/revocation protobufs.
+
+Account-lock PermissionError now produces a fixed store_access_denied code
+before loading or calling the transport. There is no automatic retry or permission
+repair. A sandbox approval enabled a bounded requested sync against the existing
+linked account; it returned zero selected-chat rows. No human messages were sent,
+new devices linked, credentials extracted, read receipts deliberately sent, or OS
+security settings changed. Successful approval does not imply permanent sandbox
+or OS permission. The CLI still lacks phone history backfill through this pinned
+binding and cannot promise complete reads or recover uncached earlier messages.
 
 ## Automated security checks
 

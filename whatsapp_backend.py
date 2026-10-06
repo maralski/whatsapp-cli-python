@@ -16,6 +16,7 @@ import threading
 import time
 import types
 from contextlib import closing
+from urllib.parse import quote
 
 VERSION = "0.5.2"
 NATIVE_HASHES = {
@@ -37,6 +38,17 @@ def local_cli():
 
 def disabled(*args, **kwargs):
     raise RuntimeError("Runtime downloads and media operations are disabled")
+
+
+class StoreAccessDenied(Exception):
+    """Local execution policy denied the account lock before dispatch."""
+
+
+def open_account_lock(store):
+    try:
+        return os.open(store / ".cli.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    except PermissionError:
+        raise StoreAccessDenied() from None
 
 
 def load_protocol(cli):
@@ -97,11 +109,46 @@ def plain_text(message):
     return None
 
 
+def chat_aliases(store, chat):
+    """Accept a LID only through a unique stored phone/LID mapping, never names."""
+    aliases = {chat}
+    connection = None
+    try:
+        connection = sqlite3.connect("file:" + quote(str(store / "session.db"), safe="/") + "?mode=ro", uri=True, timeout=1)
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA trusted_schema=OFF")
+        connection.set_progress_handler(lambda: 1, 100000)
+        schema = connection.execute("SELECT type,sql FROM sqlite_master WHERE name='whatsmeow_lid_map'").fetchone()
+        if schema is None or schema[0] != "table" or not schema[1].upper().startswith("CREATE TABLE"):
+            return aliases
+        columns = {row[1] for row in connection.execute("PRAGMA table_xinfo(whatsmeow_lid_map)") if row[6] == 0}
+        if not {"lid", "pn"} <= columns:
+            return aliases
+        phone = chat.split("@")[0]
+        rows = connection.execute("SELECT lid,pn FROM whatsmeow_lid_map WHERE pn IN (?,?) LIMIT 2", (phone, chat)).fetchall()
+        if len(rows) != 1:
+            return aliases
+        lid, pn = rows[0]
+        if not isinstance(lid, str) or not re.fullmatch(r"[1-9][0-9]{5,19}(?:@lid)?", lid) or pn not in (phone, chat):
+            return aliases
+        user = lid.split("@")[0]
+        reverse = connection.execute("SELECT lid,pn FROM whatsmeow_lid_map WHERE lid IN (?,?) LIMIT 2", (user, user + "@lid")).fetchall()
+        if reverse == rows:
+            aliases.add(user + "@lid")
+    except (sqlite3.Error, ValueError, TypeError):
+        pass  # Incomplete or conflicting metadata never expands chat scope.
+    finally:
+        if connection is not None:
+            connection.close()
+    return aliases
+
+
 class TextIndex:
     """Bounded selected-chat cache; no credentials, contact enumeration or media."""
-    def __init__(self, store, chat, limit):
+    def __init__(self, store, chat, limit, *, aliases=None):
         self.path = store / "messages.sqlite3"
         self.chat = chat
+        self.aliases = {chat} if aliases is None else set(aliases) | {chat}
         self.limit = limit
         self.stored = 0
         self.failed = False
@@ -139,7 +186,7 @@ class TextIndex:
     def payload(self, msg_id, timestamp, outgoing, message):
         if message.HasField("protocolMessage"):
             protocol = message.protocolMessage
-            if protocol.type == 0 and protocol.key.remoteJID in ("", self.chat):
+            if protocol.type == 0 and protocol.key.remoteJID in self.aliases | {""}:
                 self.revoke(protocol.key.ID)
             return
         self.record(msg_id, timestamp, outgoing, plain_text(message))
@@ -149,21 +196,20 @@ class TextIndex:
         if source.IsGroup or any((event.IsEphemeral, event.IsViewOnce, event.IsViewOnceV2, event.IsViewOnceV2Extension, event.IsEdit)):
             return
         chat = source.Chat.User + "@" + source.Chat.Server
-        # Never infer that an unrelated LID maps to the selected phone.
-        if chat == self.chat:
+        if chat in self.aliases:
             self.payload(event.Info.ID, event.Info.Timestamp, source.IsFromMe, event.Message)
 
     def history(self, client, event):
         scanned = 0
         for conversation in event.Data.conversations:
-            if conversation.ID != self.chat or conversation.ephemeralExpiration:
+            if conversation.ID not in self.aliases or conversation.ephemeralExpiration:
                 continue
             for item in conversation.messages:
                 scanned += 1
                 if scanned > 10000 or self.stored >= self.limit:
                     return
                 msg = item.message
-                if msg.key.remoteJID != self.chat:
+                if msg.key.remoteJID not in self.aliases:
                     continue
                 self.payload(msg.key.ID, msg.messageTimestamp, msg.key.fromMe, msg.message)
 
@@ -236,7 +282,8 @@ def operate(request, cli, protocol):
             pairing["failure"] = "qr_render_failed"
             unsafe_auth.set()
     client.event.qr(qr)
-    index = TextIndex(store, request["jid"], request["limit"]) if command in ("send", "sync") else None
+    aliases = chat_aliases(store, request["jid"]) if command == "sync" else None
+    index = TextIndex(store, request["jid"], request["limit"], aliases=aliases) if command in ("send", "sync") else None
     if command == "sync":
         client.event(protocol.MessageEv)(index.live)
         client.event(protocol.HistorySyncEv)(index.history)
@@ -316,7 +363,7 @@ def main():
             verified_pair_terminal(request)
         cli = local_cli()
         store = cli.verify_store(request["store"])
-        fd = os.open(store / ".cli.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        fd = open_account_lock(store)
         with os.fdopen(fd, "a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -325,6 +372,8 @@ def main():
             else:
                 protocol = load_protocol(cli)
                 result = operate(request, cli, protocol)
+    except StoreAccessDenied:
+        result = {"error": "store_access_denied"}
     except Exception:
         # Even malformed requests and native exceptions must not echo private data.
         result = {"error": "send_unknown" if isinstance(locals().get("request"), dict) and request.get("command") == "send" else "backend_unavailable"}
